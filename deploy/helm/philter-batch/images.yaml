@@ -1,0 +1,24 @@
+# Every image a Philter Batch run needs, pinned by digest. The Helm chart reads this file for the philter-batch
+# image (workers and console), and scripts/push-images.sh reads it to copy each image into a private registry. Argo
+# Workflows' images are installed with Argo's own chart; docs/kubernetes.md shows how to pin them from here.
+#
+# Format, kept simple so the push script can read it without a YAML parser: under `images:`, one two-space-indented
+# key per image, and under it four-space-indented `source`, `tag`, `digest`, and `repository` lines. `source` is
+# where Philterd publishes the image (or where its project does), `repository` is its path in the target registry.
+images:
+  philter-batch:
+    source: docker.io/philterd/philter-batch
+    tag: "0.1.0"
+    # Not published yet: set when the image is pushed by hand. Until then, set image.digest in the chart's values.
+    digest: ""
+    repository: philter-batch
+  workflow-controller:
+    source: quay.io/argoproj/workflow-controller
+    tag: v4.1.6
+    digest: sha256:a012a639ead374a4a9306093d6b29dfdc7e6c4c1a85c684582cb961a6cc8bcf3
+    repository: argoproj/workflow-controller
+  argoexec:
+    source: quay.io/argoproj/argoexec
+    tag: v4.1.6
+    digest: sha256:28432d912a716167709429b28e2755f49416eb4754c35ca3013863fb72717a00
+    repository: argoproj/argoexec

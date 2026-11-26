@@ -1,0 +1,13 @@
+{
+  "name": "example",
+  "identifiers": {
+    "person": {
+      "phEyeConfiguration": {"modelPath": "ph-eye-pii-en-small"},
+      "phEyeFilterStrategies": [{"strategy": "REDACT", "redactionFormat": "{{{REDACTED-%t}}}"}]
+    },
+    "emailAddress": {"emailAddressFilterStrategies": [{"strategy": "REDACT", "redactionFormat": "{{{REDACTED-%t}}}"}]},
+    "phoneNumber": {"phoneNumberFilterStrategies": [{"strategy": "REDACT", "redactionFormat": "{{{REDACTED-%t}}}"}]},
+    "ssn": {"ssnFilterStrategies": [{"strategy": "REDACT", "redactionFormat": "{{{REDACTED-%t}}}"}]},
+    "creditCard": {"creditCardFilterStrategies": [{"strategy": "REDACT", "redactionFormat": "{{{REDACTED-%t}}}"}]}
+  }
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Logs carry IDs, counts, and reason codes only, never document text or detected values. -->
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_ERR">
+            <PatternLayout pattern="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%t] %c{1} %msg%n"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <!-- Phileas's own logging is kept to warnings, so its debug output (which can include spans) never appears. -->
+        <Logger name="ai.philterd.phileas" level="warn"/>
+        <Logger name="software.amazon.awssdk" level="warn"/>
+        <Logger name="org.apache.http" level="warn"/>
+        <Root level="info">
+            <AppenderRef ref="Console"/>
+        </Root>
+    </Loggers>
+</Configuration>

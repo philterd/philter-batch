@@ -1,0 +1,18 @@
+Philter Batch is installed in namespace {{ .Release.Namespace }}. Runs are kept under
+s3://{{ .Values.output.bucket }}/{{ .Values.output.prefix }}runs/.
+{{- if .Values.console.enabled }}
+{{- $exec := printf "kubectl exec -n %s %s-console-0 --" .Release.Namespace (include "philter-batch.fullname" .) }}
+
+Work through the console pod. Configure a run and its policy, then start it:
+  {{ $exec | replace "exec -n" "exec -i -n" }} philter-batch configure --stdin < run.yaml
+  {{ $exec | replace "exec -n" "exec -i -n" }} philter-batch set-policy <run_id> --stdin < policy.json
+  {{ $exec }} philter-batch submit <run_id>
+
+Follow it, fetch the sample report, and record the decisions:
+  {{ $exec }} philter-batch status <run_id>
+  {{ $exec }} philter-batch sample-report <run_id> > sample-report.html
+  {{ $exec }} philter-batch approve <run_id> sample --by "<name>"
+  {{ $exec }} philter-batch approve <run_id> release --by "<name>"
+{{- end }}
+
+See docs/kubernetes.md in the repository.

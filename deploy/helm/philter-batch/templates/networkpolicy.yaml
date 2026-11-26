@@ -1,0 +1,47 @@
+{{- if .Values.networkPolicy.enabled }}
+# Denies all ingress and egress for every pod in the namespace unless another policy allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "philter-batch.fullname" . }}-default-deny
+  labels:
+    {{- include "philter-batch.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# The run's pods may reach DNS, the Kubernetes API (for Argo's executor), and the object store, and nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "philter-batch.fullname" . }}-egress
+  labels:
+    {{- include "philter-batch.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "philter-batch.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 12 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        {{- toYaml .Values.networkPolicy.kubernetesApi.to | nindent 8 }}
+      ports:
+        {{- toYaml .Values.networkPolicy.kubernetesApi.ports | nindent 8 }}
+    - to:
+        {{- toYaml .Values.networkPolicy.objectStore.to | nindent 8 }}
+      ports:
+        {{- toYaml .Values.networkPolicy.objectStore.ports | nindent 8 }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

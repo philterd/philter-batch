@@ -1,0 +1,211 @@
+{{- $fullname := include "philter-batch.fullname" . -}}
+{{- $grace := int .Values.workers.shutdownGraceSeconds -}}
+{{- $run := list "--run-id" "{{workflow.parameters.run-id}}" -}}
+{{- $workerShape := list "--threads" (toString (int .Values.workers.threads)) "--onnx-threads" (toString (div (int .Values.workers.cpu) (int .Values.workers.threads))) "--shutdown-grace-seconds" (toString $grace) -}}
+# One run: preflight, inventory, the sample, the sample gate, the worker pool, finalize, and the release gate.
+# The console's submit starts it for a configured run; by hand:
+#   argo submit --from workflowtemplate/{{ $fullname }} -p run-id=<run_id>
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "philter-batch.labels" . | nindent 4 }}
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      # The run, configured in the bucket with the console's configure and set-policy.
+      - name: run-id
+  onExit: exit-handler
+  serviceAccountName: {{ include "philter-batch.serviceAccountName" . }}
+  # One workflow at a time in the release: a second submission waits until the first ends.
+  synchronization:
+    mutexes:
+      - name: {{ $fullname }}-run
+  podGC:
+    strategy: {{ .Values.workflow.podGC }}
+  {{- with .Values.workflow.ttlSecondsAfterCompletion }}
+  ttlStrategy:
+    secondsAfterCompletion: {{ . }}
+  {{- end }}
+  podMetadata:
+    labels:
+      {{- include "philter-batch.selectorLabels" . | nindent 6 }}
+      {{- with .Values.workflow.podLabels }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+    annotations:
+      philterd.ai/run-id: {{ "{{workflow.parameters.run-id}}" | quote }}
+      {{- with .Values.workflow.podAnnotations }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  volumes:
+    - name: config
+      configMap:
+        name: {{ $fullname }}
+
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: preflight
+            template: check-store
+          - name: inventory
+            template: inventory
+            depends: preflight
+          - name: sample
+            template: sample
+            depends: inventory
+          # Waits for gates/sample-approved.json or -rejected.json: philter-batch approve <run_id> sample
+          - name: sample-gate
+            template: await-gate
+            depends: sample
+            arguments:
+              parameters:
+                - name: gate
+                  value: sample
+          - name: sample-rejected
+            template: note
+            depends: sample-gate
+            when: "{{ "{{tasks.sample-gate.outputs.parameters.decision}}" }} == rejected"
+            arguments:
+              parameters:
+                - name: message
+                  value: "Run {{ "{{workflow.parameters.run-id}}" }}: the sample was rejected. Nothing past the sample was processed."
+          - name: workers
+            template: worker-pool
+            depends: sample-gate
+            when: "{{ "{{tasks.sample-gate.outputs.parameters.decision}}" }} == approved"
+          # A skipped worker pool (a rejected sample) must not start finalize, so each depends on success.
+          - name: finalize
+            template: finalize
+            depends: workers.Succeeded
+          # Waits for gates/release-approved.json or -rejected.json: philter-batch approve <run_id> release
+          - name: release-gate
+            template: await-gate
+            depends: finalize.Succeeded
+            arguments:
+              parameters:
+                - name: gate
+                  value: release
+          - name: release-rejected
+            template: note
+            depends: release-gate
+            when: "{{ "{{tasks.release-gate.outputs.parameters.decision}}" }} == rejected"
+            arguments:
+              parameters:
+                - name: message
+                  value: "Run {{ "{{workflow.parameters.run-id}}" }}: the release was rejected."
+
+    - name: check-store
+      retryStrategy:
+        {{- include "philter-batch.stepRetry" . | nindent 8 }}
+      {{- with include "philter-batch.placement" .Values.steps | trim }}{{ nindent 6 . }}{{ end }}
+      volumes:
+        {{- include "philter-batch.tmpVolume" .Values.steps.tmpSizeLimit | nindent 8 }}
+      container:
+        {{- include "philter-batch.container" (dict "ctx" . "args" (concat (list "check-store") $run) "cpu" .Values.steps.cpu "memory" .Values.steps.memory "javaOptions" .Values.steps.javaOptions) | nindent 8 }}
+
+    - name: inventory
+      retryStrategy:
+        {{- include "philter-batch.stepRetry" . | nindent 8 }}
+      {{- with include "philter-batch.placement" .Values.steps | trim }}{{ nindent 6 . }}{{ end }}
+      volumes:
+        {{- include "philter-batch.tmpVolume" .Values.steps.tmpSizeLimit | nindent 8 }}
+      container:
+        {{- include "philter-batch.container" (dict "ctx" . "args" (concat (list "inventory") $run) "cpu" .Values.steps.cpu "memory" .Values.steps.memory "javaOptions" .Values.steps.javaOptions) | nindent 8 }}
+
+    # Redacts the sample and writes sample/ (output, report.json, report.html). One pod shaped like a worker, so the
+    # throughput it measures is a worker's. Does nothing for a run without a sample, or once the report exists.
+    - name: sample
+      retryStrategy:
+        {{- include "philter-batch.stoppableRetry" . | nindent 8 }}
+      podSpecPatch: |
+        terminationGracePeriodSeconds: {{ int .Values.workers.terminationGracePeriodSeconds }}
+      {{- with include "philter-batch.placement" .Values.workers | trim }}{{ nindent 6 . }}{{ end }}
+      volumes:
+        {{- include "philter-batch.tmpVolume" .Values.workers.tmpSizeLimit | nindent 8 }}
+      container:
+        {{- include "philter-batch.container" (dict "ctx" . "args" (concat (list "sample") $run $workerShape (list "--worker-pods" (toString (int .Values.workers.count)))) "cpu" .Values.workers.cpu "memory" .Values.workers.memory "javaOptions" .Values.workers.javaOptions) | nindent 8 }}
+
+    # Waits in a small pod for a decision marker in the bucket, and outputs approved or rejected. A run without the
+    # gate is approved at once.
+    - name: await-gate
+      inputs:
+        parameters:
+          - name: gate
+      outputs:
+        parameters:
+          - name: decision
+            valueFrom:
+              path: /tmp/gate/decision
+      retryStrategy:
+        {{- include "philter-batch.stoppableRetry" . | nindent 8 }}
+      {{- with include "philter-batch.placement" .Values.steps | trim }}{{ nindent 6 . }}{{ end }}
+      volumes:
+        {{- include "philter-batch.tmpVolume" "64Mi" | nindent 8 }}
+      container:
+        {{- include "philter-batch.container" (dict "ctx" . "args" (concat (list "await-gate") $run (list "--gate" "{{inputs.parameters.gate}}" "--poll-seconds" (toString (int .Values.gates.pollSeconds)) "--decision-file" "/tmp/gate/decision")) "cpu" .Values.gates.cpu "memory" .Values.gates.memory "javaOptions" .Values.gates.javaOptions) | nindent 8 }}
+
+    # A fixed pool of worker pods. Each claims shards until none is left, then exits 0.
+    - name: worker-pool
+      parallelism: {{ int .Values.workers.count }}
+      steps:
+        - - name: work
+            template: work
+            withSequence:
+              count: {{ int .Values.workers.count | quote }}
+
+    - name: work
+      # Retried: 3 (stopped by SIGTERM, progress saved and the claim released), 4 (work remains but other pods hold
+      # it; a retry takes over a claim once its lease expires), 137 and 143 (killed), and pod errors such as a lost
+      # node. Not retried: 1 (error) and 2 (usage), which a retry would repeat.
+      retryStrategy:
+        limit: {{ .Values.workers.retry.limit | quote }}
+        retryPolicy: Always
+        expression: 'lastRetry.status == "Error" || asInt(lastRetry.exitCode) in [3, 4, 137, 143]'
+        backoff:
+          duration: {{ .Values.workers.retry.backoff.duration | quote }}
+          factor: {{ .Values.workers.retry.backoff.factor }}
+          cap: {{ .Values.workers.retry.backoff.cap | quote }}
+      # SIGTERM gives the worker workers.shutdownGraceSeconds ({{ $grace }}) to save progress.
+      podSpecPatch: |
+        terminationGracePeriodSeconds: {{ int .Values.workers.terminationGracePeriodSeconds }}
+      {{- with include "philter-batch.placement" .Values.workers | trim }}{{ nindent 6 . }}{{ end }}
+      volumes:
+        {{- include "philter-batch.tmpVolume" .Values.workers.tmpSizeLimit | nindent 8 }}
+      container:
+        {{- include "philter-batch.container" (dict "ctx" . "args" (concat (list "work") $run $workerShape) "cpu" .Values.workers.cpu "memory" .Values.workers.memory "javaOptions" .Values.workers.javaOptions) | nindent 8 }}
+
+    # Exit 5 (a shard has no done marker) is not retried: resume the workflow after finding out why.
+    - name: finalize
+      retryStrategy:
+        {{- include "philter-batch.stepRetry" . | nindent 8 }}
+      {{- with include "philter-batch.placement" .Values.steps | trim }}{{ nindent 6 . }}{{ end }}
+      volumes:
+        {{- include "philter-batch.tmpVolume" .Values.steps.tmpSizeLimit | nindent 8 }}
+      container:
+        {{- include "philter-batch.container" (dict "ctx" . "args" (concat (list "finalize") $run) "cpu" .Values.steps.cpu "memory" .Values.steps.memory "javaOptions" .Values.steps.javaOptions) | nindent 8 }}
+
+    # Prints a message to the step's log, such as why the run ended at a gate.
+    - name: note
+      inputs:
+        parameters:
+          - name: message
+      {{- include "philter-batch.shellStep" (dict "ctx" . "script" "printf \"%s\\n\" \"$MESSAGE\"" "env" (list (dict "name" "MESSAGE" "value" "{{inputs.parameters.message}}"))) | nindent 6 }}
+
+    # Records how the run ended in this pod's log and the Workflow's status. It touches neither the input nor the
+    # output; a failed run is resumed by submitting it again from the console.
+    - name: exit-handler
+      {{- include "philter-batch.shellStep" (dict "ctx" . "script" "printf \"Run %s: workflow %s ended %s.\\n\" \"$RUN_ID\" \"$WORKFLOW\" \"$STATUS\"; if [ \"$STATUS\" != Succeeded ]; then printf \"Failed steps: %s\\n\" \"$FAILURES\"; fi" "env" (list (dict "name" "RUN_ID" "value" "{{workflow.parameters.run-id}}") (dict "name" "WORKFLOW" "value" "{{workflow.name}}") (dict "name" "STATUS" "value" "{{workflow.status}}") (dict "name" "FAILURES" "value" "{{workflow.failures}}"))) | nindent 6 }}

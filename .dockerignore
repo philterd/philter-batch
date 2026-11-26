@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+.dockerignore
+.claude
+target
+docs
+examples
+*.md
+.idea
+.vscode
+*.swp
+.DS_Store
+deploy

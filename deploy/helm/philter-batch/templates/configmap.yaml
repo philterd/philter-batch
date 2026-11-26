@@ -1,0 +1,11 @@
+{{- include "philter-batch.validate" . }}
+# Where runs keep everything. Each run's own configuration and policy are stored in the bucket by the console.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "philter-batch.fullname" . }}
+  labels:
+    {{- include "philter-batch.labels" . | nindent 4 }}
+data:
+  deployment.yaml: |
+    {{- include "philter-batch.deployment" . | nindent 4 }}

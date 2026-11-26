@@ -1,0 +1,94 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+
+  # Compiles, runs the unit tests and the integration tests (which start RustFS in Docker as an S3-compatible
+  # store), and fails when line coverage drops below the floor in pom.xml (coverage.minimum). Raise the floor as
+  # coverage improves; do not lower it to make a build pass.
+  #
+  # The test that runs the PhEye model (ModelIT) is skipped here: it needs the model on disk, named by
+  # PHILTER_BATCH_TEST_MODELS. The image build below downloads the same model and checks its SHA-256.
+  maven:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Java
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: '25'
+        cache: maven
+
+    - name: Build, test, and check coverage
+      run: ./mvnw -B verify
+
+    - name: Upload test and coverage reports
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-reports
+        path: |
+          target/surefire-reports/
+          target/failsafe-reports/
+          target/site/jacoco/
+        if-no-files-found: warn
+
+  # Builds the image so a broken Dockerfile fails a pull request. It is never pushed: images are pushed by a
+  # person, deliberately, from a machine holding the registry credential, and this repository holds none.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Build the image
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        push: false
+        tags: philter-batch:ci
+
+  # Lints the Helm chart and renders it with the invented values in ci/test-values.yaml, with the console on and off
+  # and the network policy on and off. Nothing is installed or published.
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v5
+      with:
+        version: v4.3.0
+
+    - name: Lint the chart
+      run: helm lint deploy/helm/philter-batch -f deploy/helm/philter-batch/ci/test-values.yaml
+
+    - name: Render the chart
+      run: |
+        for values in "" "--set console.enabled=false" "--set networkPolicy.enabled=false"; do
+          helm template ci deploy/helm/philter-batch -f deploy/helm/philter-batch/ci/test-values.yaml $values > /dev/null
+        done
+
+  # Checks the images file that the chart and scripts/push-images.sh read, and lints the scripts. Nothing is pushed.
+  images:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Check the images file
+      run: scripts/push-images.sh --check
+
+    - name: Lint the scripts
+      run: shellcheck scripts/*.sh

@@ -1,0 +1,61 @@
+# A run's configuration. Every setting below run_id, input, output, and policy shows its default. For the console's
+# configure, leave out store, output.bucket, output.prefix, policy, and worker.threads, onnx_threads, and
+# shutdown_grace_seconds: the deployment sets them (docs/configuration.md).
+run_id: pilot-2026-11
+
+store:
+  type: s3
+  region: us-east-1
+  # endpoint: http://minio.example.internal:9000   # an S3-compatible store
+  # path_style: true
+
+input:
+  bucket: example-input-bucket
+  prefix: documents/
+
+output:
+  bucket: example-output-bucket
+  prefix: philter-batch/
+  mode: text            # text, document, or both
+
+policy: examples/policy.json
+models_directory: /opt/philter-batch/models
+policy_files_directories: []
+
+plain_text:
+  extensions: [txt, md, log]
+  charset: UTF-8
+
+inventory:
+  shard_target_bytes: 134217728     # 128 MiB
+  max_entries_per_shard: 10000
+  segment_bytes: 16777216           # 16 MiB
+  max_file_bytes: 53687091200       # 50 GiB
+  max_line_bytes: 16777216          # 16 MiB
+
+lease:
+  initial_seconds: 600
+  max_seconds: 86400
+  renew_seconds: 30
+  expiry_grace_seconds: 5
+  max_clock_skew_seconds: 300
+  poison_attempts: 3
+
+worker:
+  threads: 4                        # default: half the processors
+  # onnx_threads: 2                 # default: processors / threads
+  flush_bytes: 8388608              # 8 MiB
+  flush_seconds: 60
+  file_timeout_seconds: 600
+  shutdown_grace_seconds: 25
+
+sample:
+  enabled: true
+  size: 50
+  # seed: 1234                      # default: derived from run_id
+  report_max_chars: 20000
+  # price_per_worker_hour: 0.68     # when set, the sample report estimates the cost
+  currency: USD
+
+release_gate:
+  enabled: true

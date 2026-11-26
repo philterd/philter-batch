@@ -1,0 +1,149 @@
+# Philter Batch: one release per namespace. Runs are configured and started from the console pod, not from these
+# values. See docs/kubernetes.md.
+
+# The philter-batch image (workers and console), pinned by digest. The repository and digest default to the ones
+# pinned in images.yaml; the registry is where scripts/push-images.sh copied them, such as the customer's ECR.
+image:
+  registry: ""              # for example 111122223333.dkr.ecr.us-east-1.amazonaws.com
+  repository: ""            # default: images.yaml
+  digest: ""                # default: images.yaml; sha256:<64 hex characters>
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Where runs keep everything: the store, and the bucket and prefix under which each run writes runs/<run_id>/. Every
+# pod reads these from deployment.yaml in the ConfigMap; a run's own configuration (from the console's configure)
+# names its input and output mode.
+store:
+  type: s3
+  region: ""                # the SDK's default when empty
+  endpoint: ""              # an S3-compatible store, such as http://s3.example.internal:9000
+  path_style: false
+output:
+  bucket: ""                # required
+  prefix: philter-batch/
+
+# The service account of the workflow's pods: read on the input, write under the output prefix.
+serviceAccount:
+  create: true
+  # Defaults to the release's full name.
+  name: ""
+  # Annotations for workload identity, for example IRSA:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/philter-batch
+  # EKS Pod Identity needs no annotation: associate the role with this service account's name.
+  annotations: {}
+
+# Fallback when workload identity is not set up: the name of an existing Secret in the release namespace holding
+# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Its keys are passed to every pod, the console's included.
+credentialsSecret: ""
+
+# The console: a pod running the philter-batch image idle, in which the operator configures, submits, follows, and
+# approves runs with kubectl exec. It keeps no state: everything it writes goes to the bucket.
+console:
+  enabled: true
+  serviceAccount:
+    create: true
+    # Defaults to <full name>-console.
+    name: ""
+    # Its role needs read and write under the output prefix (configure, approve) and nothing on the input.
+    annotations: {}
+  cpu: "1"
+  memory: 1Gi
+  javaOptions: "-XX:MaxRAMPercentage=50"
+  tmpSizeLimit: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# The worker pool: a fixed number of pods, each claiming shards until none is left. The sample step runs in one pod
+# with the same resources and placement, so the throughput it measures is a worker's.
+workers:
+  count: 4
+  # Shards processed at once in one pod. ONNX Runtime gets cpu / threads threads per model call.
+  threads: 1
+  # Whole CPUs. Requests equal limits.
+  cpu: 4
+  memory: 6Gi
+  # JVM options. The ONNX model's memory is outside the heap, so the heap must leave room for it.
+  javaOptions: "-XX:MaxRAMPercentage=50"
+  # The memory-backed /tmp, where ONNX Runtime and the tokenizer extract their native libraries. Counts against
+  # the memory limit.
+  tmpSizeLimit: 512Mi
+  # After SIGTERM, how long a worker waits for the file in hand before saving progress and exiting (the run's
+  # worker.shutdown_grace_seconds). Below terminationGracePeriodSeconds.
+  shutdownGraceSeconds: 25
+  terminationGracePeriodSeconds: 60
+  # Spot or preemptible worker nodes, for example:
+  #   nodeSelector: {karpenter.sh/capacity-type: spot}
+  #   tolerations: [{key: spot, operator: Exists, effect: NoSchedule}]
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Retries of a worker pod after exit 3 (stopped by a signal), 4 (all remaining work claimed by other pods),
+  # 137 or 143 (killed), or a pod error such as a lost node. Exit 1 and 2 are never retried.
+  retry:
+    limit: 100
+    backoff:
+      duration: 30s
+      factor: 2
+      cap: 5m
+
+# The gate steps: each waits in a small pod, checking the bucket for a decision.
+gates:
+  pollSeconds: 30
+  cpu: 250m
+  memory: 512Mi
+  javaOptions: "-XX:MaxRAMPercentage=50"
+
+# The other steps: check-store, inventory, finalize, and the exit handler. Run these on regular nodes.
+steps:
+  cpu: 1
+  # Inventory and finalize hold about 0.5 KB per input file in memory.
+  memory: 4Gi
+  javaOptions: "-XX:MaxRAMPercentage=50"
+  tmpSizeLimit: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Retries after a pod error or exit 137 or 143. Inventory and finalize can be run again safely.
+  retryLimit: 3
+
+workflow:
+  # When Argo deletes a run's pods. Pod logs (the inventory summary in particular) go with them unless Argo
+  # archives logs.
+  podGC: OnWorkflowSuccess
+  # Seconds to keep a finished Workflow object; 0 keeps it until deleted.
+  ttlSecondsAfterCompletion: 0
+  podLabels: {}
+  podAnnotations: {}
+
+# A default-deny NetworkPolicy for the namespace, and an egress policy for the run's pods and the console. Enforcing
+# it needs a CNI that implements NetworkPolicy. Install Argo Workflows in another namespace.
+networkPolicy:
+  enabled: true
+  dns:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kube-system
+    podSelector:
+      matchLabels:
+        k8s-app: kube-dns
+  # The Kubernetes API server, which Argo's wait container in every pod calls. NetworkPolicy sees the API server's
+  # endpoint addresses (kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes), not the
+  # service IP. Required when enabled. For example:
+  #   to: [{ipBlock: {cidr: 10.0.0.0/16}}]
+  #   ports: [{port: 443, protocol: TCP}]
+  kubernetesApi:
+    to: []
+    ports:
+      - port: 443
+        protocol: TCP
+  # The object store. Required when enabled. For S3 through a gateway endpoint, the CIDRs of the region's S3
+  # prefix list; for an in-cluster store, a namespaceSelector and podSelector.
+  objectStore:
+    to: []
+    ports:
+      - port: 443
+        protocol: TCP
+  # Further egress rules, appended as written.
+  extraEgress: []

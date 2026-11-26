@@ -1,0 +1,14 @@
+apiVersion: v2
+name: philter-batch
+description: >-
+  Philter Batch on Kubernetes: the run configuration, service account, network policy, and the Argo Workflows
+  template for one run. Phileas runs in the worker pods; no Philter server is needed. Argo Workflows is installed
+  separately from its own chart.
+type: application
+# The chart is versioned with the image it runs.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+home: https://www.philterd.ai
+sources:
+  - https://github.com/philterd/philter-batch
