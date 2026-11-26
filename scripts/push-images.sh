@@ -4,9 +4,9 @@
 #   scripts/push-images.sh [region]
 #
 # The account is the one the AWS CLI's credentials belong to. The region defaults to AWS_REGION, AWS_DEFAULT_REGION,
-# or the AWS CLI's configured region. Each missing
-# repository is created with immutable tags, scan on push, and encryption. An image already there is skipped, so the
-# script can be run again. An image with no digest in images.yaml is skipped with a note.
+# or the AWS CLI's configured region. Each missing repository is created with immutable tags, scan on push, and
+# encryption. An existing repository must have immutable tags, or the script stops. An image already there is
+# skipped, so the script can be run again. An image with no digest in images.yaml is skipped with a note.
 #
 # PHILTER_BATCH_IMAGE=<image>@sha256:<digest> copies philter-batch from there instead, for example a build you pushed
 # to your own registry before the image is published.
@@ -40,9 +40,17 @@ while read -r name source tag digest repository <&3; do
     echo "Skipping $name: images.yaml has no digest for it (set PHILTER_BATCH_IMAGE for philter-batch)."
     continue
   fi
-  aws ecr describe-repositories --region "$region" --repository-names "$repository" >/dev/null 2>&1 ||
+  if mutability="$(aws ecr describe-repositories --region "$region" --repository-names "$repository" \
+      --query 'repositories[0].imageTagMutability' --output text 2>/dev/null)"; then
+    # An existing repository is pushed to only if its tags are immutable, so a tag cannot be moved under it.
+    if [ "$mutability" != IMMUTABLE ]; then
+      echo "push-images: $repository exists with tag mutability $mutability, not IMMUTABLE; not pushing to it" >&2
+      exit 1
+    fi
+  else
     aws ecr create-repository --region "$region" --repository-name "$repository" --image-tag-mutability IMMUTABLE \
       --image-scanning-configuration scanOnPush=true --encryption-configuration encryptionType=AES256 >/dev/null
+  fi
   if [ "$(crane digest "$registry/$repository:$tag" 2>/dev/null)" = "$digest" ]; then
     echo "$name is already in $registry at $digest."
   else

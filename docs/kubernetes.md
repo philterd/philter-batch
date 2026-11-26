@@ -33,7 +33,7 @@ scripts/push-images.sh us-east-1
 It creates each missing repository (immutable tags, scan on push, AES-256 encryption), logs `crane` in to ECR with a
 temporary configuration, and copies each image from where it is published. An image whose tag is already in the
 repository at its pinned digest is skipped, so the script can be run again. An existing repository is used as it
-is, with its own settings. With immutable tags, ECR refuses to move an existing tag to another digest.
+is, with its own settings, but only if its tags are immutable: otherwise the script stops before pushing to it. With immutable tags, ECR refuses to move an existing tag to another digest.
 
 The philter-batch image is not published yet, so `images.yaml` has no digest for it and the script skips it. Push
 your build to a registry you can reach and give it with `PHILTER_BATCH_IMAGE=<image>@sha256:<digest>`, and set
