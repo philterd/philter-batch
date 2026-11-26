@@ -81,14 +81,72 @@ jobs:
           helm template ci deploy/helm/philter-batch -f deploy/helm/philter-batch/ci/test-values.yaml $values > /dev/null
         done
 
-  # Checks the images file that the chart and scripts/push-images.sh read, and lints the scripts. Nothing is pushed.
+  # Lints the scripts. The images file is checked by the chart renders above, which read it. Nothing is pushed.
   images:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
 
-    - name: Check the images file
-      run: scripts/push-images.sh --check
-
     - name: Lint the scripts
-      run: shellcheck scripts/*.sh
+      run: shellcheck scripts/*.sh deploy/terraform/aws/scripts/*.sh
+
+  # Checks the AWS Terraform offline: formatting, validation, the mocked tests (terraform test plans the stack against
+  # mocked AWS and Helm providers), tflint with the AWS ruleset, and Trivy's configuration scan. No AWS credentials:
+  # nothing is planned or applied against an account.
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform/aws
+    env:
+      TFLINT_VERSION: v0.66.0
+      TFLINT_SHA256: 22be11cadc25cd02401e94c0ccc91aa63467debb8485c2a755d98f4c0a9d1e2e
+      TRIVY_VERSION: 0.76.2
+      TRIVY_SHA256: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v4
+      with:
+        terraform_version: 1.16.1
+        terraform_wrapper: false
+
+    - name: Check formatting
+      run: terraform fmt -check -recursive -diff
+
+    - name: Validate
+      run: |
+        terraform init -backend=false -input=false
+        terraform validate
+        terraform -chdir=state-bucket init -backend=false -input=false
+        terraform -chdir=state-bucket validate
+
+    - name: Test with mocked providers
+      run: |
+        terraform test
+        scripts/test-prevent-destroy.sh
+
+    - name: Install tflint and Trivy
+      run: |
+        mkdir -p "$RUNNER_TEMP/bin"
+        curl -fsSL -o "$RUNNER_TEMP/tflint.zip" \
+          "https://github.com/terraform-linters/tflint/releases/download/$TFLINT_VERSION/tflint_linux_amd64.zip"
+        echo "$TFLINT_SHA256  $RUNNER_TEMP/tflint.zip" | sha256sum -c -
+        unzip -q "$RUNNER_TEMP/tflint.zip" -d "$RUNNER_TEMP/bin"
+        curl -fsSL -o "$RUNNER_TEMP/trivy.tar.gz" \
+          "https://github.com/aquasecurity/trivy/releases/download/v$TRIVY_VERSION/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+        echo "$TRIVY_SHA256  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+        tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP/bin" trivy
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+    # The AWS ruleset's version is pinned in .tflint.hcl.
+    - name: tflint
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        tflint --init
+        tflint --recursive --config "$PWD/.tflint.hcl"
+
+    - name: Trivy configuration scan
+      run: trivy config --exit-code 1 .

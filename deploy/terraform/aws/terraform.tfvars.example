@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars (not committed: an engagement's values stay with the engagement). Invented values.
+region        = "us-east-1"
+input_bucket  = "example-input-bucket"
+input_prefix  = "documents/"
+output_bucket = "example-output-bucket"
+output_prefix = "philter-batch/"
+
+# images.yaml does not pin the philter-batch image yet; give the digest scripts/push-images.sh copied.
+image_digests = {
+  "philter-batch" = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+# Through the access host's port forward (docs/aws.md). Leave unset for the first apply.
+# kubernetes_api_server = "https://127.0.0.1:8443"
+
+workers = {
+  count = 4
+}
+worker_nodes = {
+  desired_size = 4
+}

@@ -97,6 +97,10 @@ line per step: `configure`, `set-policy`, `submit`, `status`, `sample-report`, `
 [Kubernetes](docs/kubernetes.md). `scripts/push-images.sh` copies the images pinned in
 `deploy/helm/philter-batch/images.yaml`, by digest, into the account's private ECR.
 
+On AWS, the Terraform in `deploy/terraform/aws` creates a temporary environment for a run (a private VPC, an EKS
+cluster with an on-demand and a Spot node group, the VPC endpoints, the IAM roles, Argo Workflows, and the chart) and
+destroys it afterwards without touching the data. See [AWS](docs/aws.md).
+
 `work` exits 0 when no work is left, 4 when work remains but every shard is claimed by another worker, and 3
 when stopped by SIGTERM after saving progress. The [formats](docs/formats.md) page lists every exit code.
 

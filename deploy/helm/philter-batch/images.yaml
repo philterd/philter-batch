@@ -1,6 +1,7 @@
 # Every image a Philter Batch run needs, pinned by digest. The Helm chart reads this file for the philter-batch
-# image (workers and console), and scripts/push-images.sh reads it to copy each image into a private registry. Argo
-# Workflows' images are installed with Argo's own chart; docs/kubernetes.md shows how to pin them from here.
+# image (workers and console), scripts/push-images.sh reads it to copy each image into a private registry, and the
+# AWS Terraform (deploy/terraform/aws) reads it for every image. Argo Workflows' images are installed with Argo's own
+# chart; docs/kubernetes.md shows how to pin them from here.
 #
 # Format, kept simple so the push script can read it without a YAML parser: under `images:`, one two-space-indented
 # key per image, and under it four-space-indented `source`, `tag`, `digest`, and `repository` lines. `source` is
@@ -22,3 +23,10 @@ images:
     tag: v4.1.6
     digest: sha256:28432d912a716167709429b28e2755f49416eb4754c35ca3013863fb72717a00
     repository: argoproj/argoexec
+  # The argo-workflows chart's pre-install Job that applies Argo's full CRDs (crds.full, its default). Nodes without
+  # internet access cannot pull it from quay.io, so it is copied with the others.
+  argo-workflows-crdinstaller:
+    source: quay.io/argoproj/argo-workflows-crdinstaller
+    tag: v4.1.6
+    digest: sha256:b9be70ef3f4a0709d771e9c098a99fd2d97be1b095c1b160c668a2fde61dc237
+    repository: argoproj/argo-workflows-crdinstaller

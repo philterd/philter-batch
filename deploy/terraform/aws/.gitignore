@@ -1,0 +1,9 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+# An engagement's values stay out of the repository.
+*.tfvars
+!*.tfvars.example
+backend.hcl

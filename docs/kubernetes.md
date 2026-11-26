@@ -10,28 +10,39 @@ Philter server is needed.
 Tested on k3s v1.35.10 with Argo Workflows v4.1.6 (chart `argo-workflows` 2.0.18) and RustFS 1.0.6 as the
 object store. It has not been run on EKS, AKS, or GKE.
 
+On AWS, `deploy/terraform/aws` does everything on this page up to [Run a job from the console](#run-a-job-from-the-console):
+the cluster, Argo Workflows, the chart, the IAM roles with EKS Pod Identity, and the network policy's destinations. See
+[AWS](aws.md); the console steps below are the same.
+
 ## Images
 
 Every image a run needs is pinned by digest in `deploy/helm/philter-batch/images.yaml`: `philter-batch` (workers
-and console), and Argo Workflows' `workflow-controller` and `argoexec`. The chart reads the philter-batch entry
+and console), and Argo Workflows' `workflow-controller`, `argoexec`, and `argo-workflows-crdinstaller` (the Job
+Argo's chart runs before installing, to apply its CRDs). The chart reads the philter-batch entry
 from it. Argo's server (`argocli`) is not used: the console replaces it.
 
-`scripts/push-images.sh` copies the images, by digest, from where they are published into a private registry. For
-Amazon ECR, with AWS credentials for the target account that allow ECR repository creation and push:
+`scripts/push-images.sh` copies the images, by digest, into the private ECR of the account your AWS CLI credentials
+belong to. It needs the AWS CLI and [crane](https://github.com/google/go-containerregistry), and permission to
+create ECR repositories and push to them:
 
 ```sh
-scripts/push-images.sh --account 111122223333 --region us-east-1 --dry-run   # print the AWS and crane commands
-scripts/push-images.sh --account 111122223333 --region us-east-1
+scripts/push-images.sh             # AWS_REGION, AWS_DEFAULT_REGION, or the AWS CLI's region
+scripts/push-images.sh us-east-1
 ```
 
-It creates each missing repository (tags immutable, scan on push, AES-256 encryption, or a KMS key with
-`--kms-key`), logs in with a temporary Docker configuration, and copies each image with `crane` (v0.22.1, downloaded
-and checked against its SHA-256 if not on the PATH). An image already in the repository at its digest is skipped,
-so the script can be run again; a tag that exists at another digest is an error. It refuses any target other than a
-private ECR registry or, for testing, `--registry localhost:<port>`. `--check` checks the images file.
+It creates each missing repository (immutable tags, scan on push, AES-256 encryption), logs `crane` in to ECR with a
+temporary configuration, and copies each image from where it is published. An image whose tag is already in the
+repository at its pinned digest is skipped, so the script can be run again. An existing repository is used as it
+is, with its own settings. With immutable tags, ECR refuses to move an existing tag to another digest.
 
-The philter-batch image is not published yet, so `images.yaml` has no digest for it: build and push it yourself and
-set `image.digest`, and copy the Argo images with `--only workflow-controller --only argoexec`.
+The philter-batch image is not published yet, so `images.yaml` has no digest for it and the script skips it. Push
+your build to a registry you can reach and give it with `PHILTER_BATCH_IMAGE=<image>@sha256:<digest>`, and set
+`image.digest` to that digest.
+
+The copy runs on your machine: `crane` reads each image from its public registry and writes it to ECR's endpoint
+under your AWS credentials, so the layers pass through your connection. ECR is private because every request needs
+the account's IAM credentials, not because it is unreachable. The cluster's nodes only read from it, with their own
+role, through the VPC endpoints.
 
 ## Install Argo Workflows
 
@@ -46,11 +57,17 @@ helm install argo-workflows argo-workflows --repo https://argoproj.github.io/arg
   --set controller.image.registry=$REGISTRY \
   --set controller.image.tag=v4.1.6@sha256:a012a639ead374a4a9306093d6b29dfdc7e6c4c1a85c684582cb961a6cc8bcf3 \
   --set executor.image.registry=$REGISTRY \
-  --set executor.image.tag=v4.1.6@sha256:28432d912a716167709429b28e2755f49416eb4754c35ca3013863fb72717a00
+  --set executor.image.tag=v4.1.6@sha256:28432d912a716167709429b28e2755f49416eb4754c35ca3013863fb72717a00 \
+  --set crds.upgradeJob.image.registry=$REGISTRY \
+  --set crds.upgradeJob.image.tag=v4.1.6@sha256:b9be70ef3f4a0709d771e9c098a99fd2d97be1b095c1b160c668a2fde61dc237 \
+  --set controller.workflowRestrictions.templateReferencing=Strict
 ```
 
-The tags and digests are those in `images.yaml`. Place the controller on regular nodes, not spot or preemptible
-ones (`controller.nodeSelector` in that chart).
+The tags and digests are those in `images.yaml`. Without the `crds.upgradeJob.image` values, the chart's CRD Job
+pulls from quay.io, which fails on nodes without internet access. `templateReferencing=Strict` makes Argo run only
+workflows that reference a `WorkflowTemplate`, as the console's `submit` does, so the console's permission to create
+workflows cannot run arbitrary pods as the workers' service account. Place the controller on regular nodes, not spot
+or preemptible ones (`controller.nodeSelector` in that chart).
 
 ## Install the chart
 
@@ -87,9 +104,14 @@ Two identities, each through its own service account:
 
 - The workflow's pods (`<release full name>`): read on the input, and read, write, and delete under the output
   prefix.
-- The console (`<release full name>-console`): read, write, and delete under the output prefix, for `configure`,
-  `set-policy`, `approve`, and `reject`, and read for `status` and `sample-report`. It needs nothing on the input.
+- The console (`<release full name>-console`): `s3:ListBucket` on the output bucket, and read and write under the
+  output prefix, for `configure`, `set-policy`, `approve`, and `reject`, and read for `status` and `sample-report`.
+  It deletes nothing and needs nothing on the input.
   In Kubernetes it may create and read Argo workflows in the namespace, and nothing else.
+
+Both identities need `s3:ListBucket` on the output bucket without a prefix condition: the store treats a 404 as a
+missing object, and S3 returns 404 rather than 403 only to a caller with `s3:ListBucket` on the bucket; it also reads
+the store's clock from HeadBucket, which `s3:ListBucket` authorizes.
 
 With EKS Pod Identity, associate each role with its service account instead of annotating it. Without workload
 identity, set `credentialsSecret` to a Secret holding `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; every pod,
@@ -217,6 +239,9 @@ are per-cluster and required:
 - `networkPolicy.objectStore.to`: on EKS, route S3 through a gateway endpoint and list the CIDRs of the region's
   S3 prefix list (`aws ec2 describe-managed-prefix-lists`); for another S3-compatible store, its addresses, or a
   `namespaceSelector` and `podSelector` if it runs in the cluster.
+
+With EKS Pod Identity, pods get credentials from the agent on each node at `169.254.170.23`, port 80: add it to
+`networkPolicy.extraEgress`. The AWS Terraform sets all three.
 
 Standard NetworkPolicy matches addresses, not host names. A rule by host name (`s3.us-east-1.amazonaws.com`)
 needs a CNI with its own policy type, such as Cilium's `CiliumNetworkPolicy` with `toFQDNs`; disable the chart's

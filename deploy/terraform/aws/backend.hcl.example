@@ -1,0 +1,7 @@
+# Copy to backend.hcl (not committed) and run: terraform init -backend-config=backend.hcl
+# The bucket is created once with state-bucket/. use_lockfile locks the state with an S3 object (no DynamoDB table).
+bucket       = "example-philter-batch-tfstate"
+key          = "philter-batch/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true
