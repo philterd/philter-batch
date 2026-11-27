@@ -29,8 +29,13 @@ output "endpoint_ids" {
   value       = concat([for e in aws_vpc_endpoint.interface : e.id], [for e in aws_vpc_endpoint.s3 : e.id])
 }
 
+output "nat_gateway_ids" {
+  description = "The NAT gateway, with internet_access and create_vpc; otherwise none."
+  value       = aws_nat_gateway.this[*].id
+}
+
 output "route_table_routes" {
-  description = "The routes the new VPC's route table holds besides the local and gateway endpoint routes: none."
+  description = "The routes the new VPC's private route table holds besides the local and gateway endpoint routes: none, or with internet_access the default route to the NAT gateway."
   value       = var.create_vpc ? aws_route_table.private[0].route : null
 }
 

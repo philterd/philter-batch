@@ -5,7 +5,12 @@ input_prefix  = "documents/"
 output_bucket = "example-output-bucket"
 output_prefix = "philter-batch/"
 
-# images.yaml does not pin the philter-batch image yet; give the digest scripts/push-images.sh copied.
+# true: outbound internet through a NAT gateway, and images from Docker Hub and quay.io (no push-images.sh). See
+# docs/aws.md#internet-access. The default, false, has no route to the internet and pulls from the account's ECR.
+# internet_access = true
+
+# images.yaml does not pin the philter-batch image yet; give the digest scripts/push-images.sh copied (or, with
+# internet_access, the digest published on Docker Hub).
 image_digests = {
   "philter-batch" = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 }

@@ -399,3 +399,94 @@ run "first_apply_without_software" {
     error_message = "install_software = false must install nothing with Helm."
   }
 }
+
+run "no_internet_by_default" {
+  command = plan
+  assert {
+    condition     = length(module.network.nat_gateway_ids) == 0
+    error_message = "No NAT gateway unless internet_access is set."
+  }
+  assert {
+    condition     = output.ecr_registry == "111122223333.dkr.ecr.us-east-1.amazonaws.com" && toset(values(output.image_registries)) == toset(["111122223333.dkr.ecr.us-east-1.amazonaws.com"])
+    error_message = "By default every image comes from the account's ECR: ${jsonencode(output.image_registries)}"
+  }
+}
+
+run "internet_access" {
+  command = plan
+  variables {
+    internet_access = true
+  }
+  assert {
+    condition     = length(module.network.nat_gateway_ids) == 1
+    error_message = "internet_access must create one NAT gateway."
+  }
+  assert {
+    condition     = [for r in module.network.route_table_routes : r.cidr_block] == ["0.0.0.0/0"]
+    error_message = "The private route table must hold only the default route to the NAT gateway: ${jsonencode(module.network.route_table_routes)}"
+  }
+  assert {
+    condition     = output.interface_endpoints == sort(["ec2", "eks", "eks-auth", "ssm", "ssmmessages", "ec2messages"])
+    error_message = "With internet_access, ECR's endpoints are not needed: ${jsonencode(output.interface_endpoints)}"
+  }
+  assert {
+    condition     = [for s in jsondecode(module.network.s3_endpoint.policy).Statement : s.Sid] == ["ReadInput", "ReadWriteOutput"]
+    error_message = "With internet_access, the S3 endpoint policy must not allow ECR's layer bucket."
+  }
+  assert {
+    condition     = length(data.aws_ecr_image.images) == 0
+    error_message = "With internet_access, no image is looked up in ECR."
+  }
+  assert {
+    condition     = output.ecr_registry == null
+    error_message = "With internet_access, there is no ECR registry."
+  }
+  assert {
+    condition     = output.philter_batch_values.image == { registry = "docker.io", repository = "philterd/philter-batch", digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+    error_message = "Unexpected philter-batch image values: ${jsonencode(output.philter_batch_values.image)}"
+  }
+  assert {
+    condition     = yamldecode(module.software[0].argo_values).controller.image == { registry = "quay.io", repository = "argoproj/workflow-controller", tag = "v4.1.6@sha256:a012a639ead374a4a9306093d6b29dfdc7e6c4c1a85c684582cb961a6cc8bcf3" }
+    error_message = "Argo's controller image must come from quay.io, by digest."
+  }
+  assert {
+    condition     = yamldecode(module.software[0].argo_values).executor.image.registry == "quay.io" && yamldecode(module.software[0].argo_values).crds.upgradeJob.image.registry == "quay.io"
+    error_message = "Argo's executor and CRD installer images must come from quay.io."
+  }
+  # The redaction pods stay restricted: the chart's NetworkPolicy is the same as without internet access.
+  assert {
+    condition     = output.philter_batch_values.networkPolicy.enabled && output.philter_batch_values.networkPolicy.objectStore.to == [{ ipBlock = { cidr = "198.51.100.0/24" } }, { ipBlock = { cidr = "203.0.113.0/24" } }]
+    error_message = "The NetworkPolicy must still allow only the object store, DNS, the API, and Pod Identity."
+  }
+}
+
+run "internet_access_existing_vpc" {
+  command = plan
+  variables {
+    internet_access = true
+    create_vpc      = false
+    vpc_id          = "vpc-0123456789abcdef0"
+    subnet_ids      = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+    route_table_ids = ["rtb-0123456789abcdef0"]
+  }
+  override_data {
+    target = module.network.data.aws_vpc.existing[0]
+    values = { cidr_block = "10.90.0.0/16" }
+  }
+  override_data {
+    target = module.network.data.aws_subnet.existing["subnet-0123456789abcdef0"]
+    values = { cidr_block = "10.90.0.0/20" }
+  }
+  override_data {
+    target = module.network.data.aws_subnet.existing["subnet-0123456789abcdef1"]
+    values = { cidr_block = "10.90.16.0/20" }
+  }
+  assert {
+    condition     = length(module.network.nat_gateway_ids) == 0
+    error_message = "An existing VPC's routing is its own: no NAT gateway is created in it."
+  }
+  assert {
+    condition     = output.philter_batch_values.image.registry == "docker.io"
+    error_message = "With internet_access, the images come from public registries in an existing VPC too."
+  }
+}

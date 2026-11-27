@@ -15,8 +15,13 @@ output "cluster_name" {
 }
 
 output "ecr_registry" {
-  description = "The registry the images are pulled from."
-  value       = local.registry
+  description = "The ECR registry the images are pulled from, or null with internet_access (public registries)."
+  value       = var.internet_access ? null : local.ecr_registry
+}
+
+output "image_registries" {
+  description = "The registry each image is pulled from."
+  value       = { for name, ref in local.image_refs : name => ref.registry }
 }
 
 output "workers_role_arn" {

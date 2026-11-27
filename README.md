@@ -95,7 +95,8 @@ with `medium: Memory` there.
 On Kubernetes, install Argo Workflows and the Helm chart, then work through the console pod, one `kubectl exec`
 line per step: `configure`, `set-policy`, `submit`, `status`, `sample-report`, `approve` or `reject`. See
 [Kubernetes](docs/kubernetes.md). `scripts/push-images.sh` copies the images pinned in
-`deploy/helm/philter-batch/images.yaml`, by digest, into the account's private ECR.
+`deploy/helm/philter-batch/images.yaml`, by digest, into the account's private ECR; with the Terraform's
+`internet_access`, the nodes pull them from their public registries instead.
 
 On AWS, the Terraform in `deploy/terraform/aws` creates a temporary environment for a run (a private VPC, an EKS
 cluster with an on-demand and a Spot node group, the VPC endpoints, the IAM roles, Argo Workflows, and the chart) and

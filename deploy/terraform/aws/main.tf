@@ -37,9 +37,21 @@ locals {
   ]
   unknown_images  = [for name in keys(var.image_digests) : name if !contains(keys(local.images), name)]
   missing_digests = [for name, digest in local.digests : name if digest == ""]
-  registry        = coalesce(var.ecr_registry, "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com")
-  registry_id     = split(".", local.registry)[0]
+  ecr_registry    = coalesce(var.ecr_registry, "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com")
+  registry_id     = split(".", local.ecr_registry)[0]
   argo_tag        = { for name in ["workflow-controller", "argoexec", "argo-workflows-crdinstaller"] : name => "${local.images[name].tag}@${local.digests[name]}" }
+
+  # Where each image is pulled from: its public source in images.yaml (such as docker.io/philterd/philter-batch)
+  # with internet_access, and otherwise the account's ECR, where push-images.sh copied it.
+  image_refs = {
+    for name, image in local.images : name => (var.internet_access ? {
+      registry   = split("/", image.source)[0]
+      repository = join("/", slice(split("/", image.source), 1, length(split("/", image.source))))
+      } : {
+      registry   = local.ecr_registry
+      repository = image.repository
+    })
+  }
 
   # --- Placement: one label and one taint, shared by the node groups and the chart values ---------------------------
   node_pool_label  = "philterd.ai/node-pool"
@@ -63,7 +75,9 @@ locals {
   # The access host adds what SSM Session Manager needs
   # (https://docs.aws.amazon.com/systems-manager/latest/userguide/setup-create-vpc.html). Not created, since nothing
   # here uses them: sts and oidc-eks (IRSA), elasticloadbalancing, logs, xray, acm, route53, autoscaling.
-  cluster_endpoint_services = ["ec2", "ecr.api", "ecr.dkr", "eks", "eks-auth"]
+  # With internet_access, the images come from public registries, so ECR's endpoints are left out; the others keep
+  # AWS API traffic off the NAT gateway.
+  cluster_endpoint_services = var.internet_access ? ["ec2", "eks", "eks-auth"] : ["ec2", "ecr.api", "ecr.dkr", "eks", "eks-auth"]
   ssm_endpoint_services     = ["ssm", "ssmmessages", "ec2messages"]
   interface_endpoint_services = concat(local.cluster_endpoint_services,
   var.access_host_enabled ? local.ssm_endpoint_services : [])
@@ -71,18 +85,20 @@ locals {
   input_bucket_arn  = "arn:${data.aws_partition.current.partition}:s3:::${var.input_bucket}"
   output_bucket_arn = "arn:${data.aws_partition.current.partition}:s3:::${var.output_bucket}"
 
-  # The S3 gateway endpoint allows only the input (read), the output prefix (read and write), and ECR's layer bucket,
-  # from which nodes pull image layers (https://docs.aws.amazon.com/AmazonECR/latest/userguide/vpc-endpoints.html).
+  # The S3 gateway endpoint allows only the input (read), the output prefix (read and write), and, when the images
+  # come from ECR, ECR's layer bucket, from which nodes pull image layers
+  # (https://docs.aws.amazon.com/AmazonECR/latest/userguide/vpc-endpoints.html). Docker Hub and quay.io serve layers
+  # from CloudFront, not from S3 in the region (checked 2026-11-27), so their pulls do not pass through this endpoint.
+  ecr_layers_statement = {
+    Sid       = "EcrImageLayers"
+    Effect    = "Allow"
+    Principal = "*"
+    Action    = ["s3:GetObject"]
+    Resource  = ["arn:${data.aws_partition.current.partition}:s3:::prod-${var.region}-starport-layer-bucket/*"]
+  }
   s3_endpoint_policy = {
     Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "EcrImageLayers"
-        Effect    = "Allow"
-        Principal = "*"
-        Action    = ["s3:GetObject"]
-        Resource  = ["arn:${data.aws_partition.current.partition}:s3:::prod-${var.region}-starport-layer-bucket/*"]
-      },
+    Statement = concat(var.internet_access ? [] : [local.ecr_layers_statement], [
       {
         Sid       = "ReadInput"
         Effect    = "Allow"
@@ -97,7 +113,7 @@ locals {
         Action    = ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]
         Resource  = [local.output_bucket_arn, "${local.output_bucket_arn}/${var.output_prefix}*"]
       },
-    ]
+    ])
   }
 
   # --- The API server, for the Helm provider and the destroy check --------------------------------------------------
@@ -107,28 +123,30 @@ locals {
   # --- Chart values ---------------------------------------------------------------------------------------------------
   argo_values = {
     server = { enabled = false } # the console replaces it; nothing listens outside the cluster
-    # The Job that applies Argo's full CRDs before install, with its image from the customer's registry.
+    # The Job that applies Argo's full CRDs before install.
     crds = {
       upgradeJob = {
-        image        = { registry = local.registry, repository = local.images["argo-workflows-crdinstaller"].repository, tag = local.argo_tag["argo-workflows-crdinstaller"] }
+        image        = merge(local.image_refs["argo-workflows-crdinstaller"], { tag = local.argo_tag["argo-workflows-crdinstaller"] })
         nodeSelector = local.system_selector
       }
     }
     controller = {
-      image        = { registry = local.registry, repository = local.images["workflow-controller"].repository, tag = local.argo_tag["workflow-controller"] }
+      image        = merge(local.image_refs["workflow-controller"], { tag = local.argo_tag["workflow-controller"] })
       nodeSelector = local.system_selector
       # Only workflows that reference a WorkflowTemplate run, as the console's submit does, so the console's
       # permission to create workflows cannot run an arbitrary pod as the workers' service account.
       workflowRestrictions = { templateReferencing = "Strict" }
     }
     executor = {
-      image = { registry = local.registry, repository = local.images["argoexec"].repository, tag = local.argo_tag["argoexec"] }
+      image = merge(local.image_refs["argoexec"], { tag = local.argo_tag["argoexec"] })
     }
   }
 
   philter_batch_values = {
+    # The repository is given only when it differs from images.yaml's, which the chart uses by default.
     image = merge(
-      { registry = local.registry },
+      { registry = local.image_refs["philter-batch"].registry },
+      var.internet_access ? { repository = local.image_refs["philter-batch"].repository } : {},
       try(local.images["philter-batch"].digest, "") == "" ? { digest = local.digests["philter-batch"] } : {}
     )
     store          = { type = "s3", region = var.region }
@@ -211,6 +229,7 @@ module "network" {
   subnet_ids                  = var.subnet_ids
   route_table_ids             = var.route_table_ids
   create_endpoints            = var.create_vpc_endpoints
+  internet_access             = var.internet_access
   interface_endpoint_services = local.interface_endpoint_services
   s3_endpoint_policy          = jsonencode(local.s3_endpoint_policy)
 }
@@ -264,7 +283,7 @@ module "output_bucket" {
 
 # Each image, looked up in the registry at plan time.
 data "aws_ecr_image" "images" {
-  for_each        = var.check_images_in_ecr ? { for k, v in local.images : k => v if local.digests[k] != "" } : {}
+  for_each        = var.check_images_in_ecr && !var.internet_access ? { for k, v in local.images : k => v if local.digests[k] != "" } : {}
   registry_id     = local.registry_id
   repository_name = each.value.repository
   image_digest    = local.digests[each.key]

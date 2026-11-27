@@ -270,7 +270,7 @@ because Argo's executor does not read it from the image.
 
 | Value | Default | Meaning |
 | --- | --- | --- |
-| `image.registry` | none, required | The registry the images were copied to, such as `111122223333.dkr.ecr.us-east-1.amazonaws.com`. |
+| `image.registry` | none, required | The registry the images were copied to, such as `111122223333.dkr.ecr.us-east-1.amazonaws.com`, or `docker.io` (with `image.repository: philterd/philter-batch`) to pull the published image directly. |
 | `image.repository` | from `images.yaml` | The repository in the registry, without a tag. |
 | `image.digest` | from `images.yaml` | `sha256:...`. Recorded in `_SUCCESS`. Required while `images.yaml` has none. |
 | `image.pullPolicy` | `IfNotPresent` | |

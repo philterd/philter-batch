@@ -41,6 +41,12 @@ variable "route_table_ids" {
   default     = []
 }
 
+variable "internet_access" {
+  description = "With create_vpc, add an internet gateway, a public subnet, and one NAT gateway, and route the private subnets to the internet through it."
+  type        = bool
+  default     = false
+}
+
 variable "create_endpoints" {
   description = "Create the VPC endpoints. Turn off only when the VPC already has every endpoint in interface_endpoint_services and an S3 gateway endpoint whose policy allows what s3_endpoint_policy does."
   type        = bool

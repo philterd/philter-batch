@@ -1,7 +1,7 @@
 # AWS
 
 `deploy/terraform/aws` deploys a temporary Philter Batch environment into one AWS account: a VPC with no route to the
-internet (or an existing VPC), an EKS cluster with a private endpoint, an on-demand node group and a Spot worker node
+internet by default (see [Internet access](#internet-access)), or an existing VPC, an EKS cluster with a private endpoint, an on-demand node group and a Spot worker node
 group, the VPC endpoints the nodes need, the workers' and the console's IAM roles bound through EKS Pod Identity, and,
 with Helm, Argo Workflows and the Philter Batch chart. An operator applies it, runs the redaction through the console
 ([Kubernetes](kubernetes.md#run-a-job-from-the-console)), and destroys it. The documents, the output, and every run's
@@ -17,7 +17,8 @@ account.
 The whole path, from an empty account to a destroyed stack, with the default access host. Each step links to its
 details below. Run the commands from the repository's root unless a step changes directory.
 
-1. **Tools and permissions.** Terraform 1.16, the AWS CLI v2, `kubectl`, `crane`, and the Session Manager plugin,
+1. **Tools and permissions.** Terraform 1.16, the AWS CLI v2, `kubectl`, `crane` (not needed with
+   `internet_access`), and the Session Manager plugin,
    with AWS credentials for the customer's account that have the [operator's permissions](#the-operators-permissions)
    and no read on the input bucket.
 
@@ -29,7 +30,9 @@ details below. Run the commands from the repository's root unless a step changes
      terraform output -raw backend_config > ../backend.hcl)
    ```
 
-3. **Images** ([Images](#images)). Until the philter-batch image is published, give your build's digest:
+3. **Images** ([Images](#images)). Skip this step with `internet_access = true`: the nodes pull from the public
+   registries. Otherwise, copy the images into the account's ECR; until the philter-batch image is published, give
+   your build's digest:
 
    ```sh
    PHILTER_BATCH_IMAGE=registry.example.com/philter-batch@sha256:<digest> scripts/push-images.sh us-east-1
@@ -37,7 +40,8 @@ details below. Run the commands from the repository's root unless a step changes
 
 4. **Variables** ([Variables](#variables)). In `deploy/terraform/aws`, copy `terraform.tfvars.example` to
    `terraform.tfvars` and set the region, the input and output buckets and prefixes,
-   `image_digests["philter-batch"]` (the digest from step 3), and the worker count.
+   `image_digests["philter-batch"]` (the digest from step 3, or with `internet_access` the published one, until
+   `images.yaml` pins it), and the worker count.
 
 5. **Apply, twice** ([Apply](#apply)). The first apply creates the network, cluster, and access host; the second
    installs Argo and Philter Batch through the port forward:
@@ -81,17 +85,48 @@ details below. Run the commands from the repository's root unless a step changes
    terraform destroy
    ```
 
-   The buckets, the run's state and output, the state bucket, and the ECR repositories remain. At the end of the
+   The buckets, the run's state and output, the state bucket, and the ECR repositories (if any) remain. At the end of the
    engagement, delete the ECR repositories (`aws ecr delete-repository --force`) and, if no longer needed, the state
    bucket.
+
+## Internet access
+
+`internet_access` chooses where the nodes pull images from, and whether they can reach the internet at all.
+
+| | `internet_access = false` (default) | `internet_access = true` |
+| --- | --- | --- |
+| Images | The account's ECR, copied by `scripts/push-images.sh` | Their public registries, from `images.yaml`'s `source`: `docker.io/philterd/philter-batch` and `quay.io/argoproj/*` |
+| Pinning | By digest | By digest, the same digests |
+| Route to the internet | None | Outbound only, through one NAT gateway in a public subnet. No inbound route to the nodes. |
+| VPC endpoints | `ec2`, `ecr.api`, `ecr.dkr`, `eks`, `eks-auth`, S3 (with ECR's layer bucket) | `ec2`, `eks`, `eks-auth`, S3 (without ECR's layer bucket). AWS traffic still uses them. |
+| Extra cost | ECR storage while the repositories exist | The NAT gateway, by the hour and by the GB; each node pulls the philter-batch image (about 1.1 GB) through it |
+
+With `internet_access`, the nodes, anything on the host network, and Argo's controller (in the `argo` namespace,
+which has no NetworkPolicy) can reach the internet. The pods in the Philter Batch namespace, which are the ones that
+read documents, cannot: the chart's NetworkPolicy, enforced by the VPC CNI, allows them only DNS, the Kubernetes API,
+S3, and the Pod Identity agent, the same as without it. Choose the default when the customer requires that the environment have no
+route to the internet.
+
+Docker Hub allows 100 anonymous pulls per 6 hours per IPv4 address
+([docs.docker.com/docker-hub/usage](https://docs.docker.com/docker-hub/usage/), read 2026-11-27), and every node pulls
+through the NAT gateway's one address. Each node pulls the philter-batch image once (`IfNotPresent`), and a Spot node
+that is replaced pulls it again. If pulls fail with "You have reached your pull rate limit", use the default (ECR)
+instead.
+
+With `create_vpc = false`, the stack creates no NAT gateway: with `internet_access`, the given subnets must already
+route to the internet.
+
+Docker Hub and quay.io serve image layers from CloudFront (checked 2026-11-27), so their pulls go through the NAT
+gateway rather than the S3 gateway endpoint, whose policy allows only the input and output.
 
 ## What it creates, and what it does not
 
 | Created | Notes |
 | --- | --- |
-| VPC, one private subnet per availability zone (2 by default), one route table | No internet gateway, no NAT gateway. The route table holds only the local and S3 gateway routes; Terraform removes any other route added later. Skipped with `create_vpc = false`. |
-| S3 gateway endpoint | Its policy allows only the input (read), the output prefix (read and write), and ECR's layer bucket `prod-<region>-starport-layer-bucket`. |
-| Interface endpoints, private DNS on | `ec2`, `ecr.api`, `ecr.dkr`, `eks`, `eks-auth`, and, for the access host, `ssm`, `ssmmessages`, `ec2messages`. |
+| VPC, one private subnet per availability zone (2 by default), one route table | By default no internet gateway and no NAT gateway: the route table holds only the local and S3 gateway routes, and Terraform removes any other route added later. Skipped with `create_vpc = false`. |
+| Internet gateway, public subnet (the VPC's last /20), Elastic IP, NAT gateway | Only with `internet_access` and `create_vpc`. The private route table then holds one more route, `0.0.0.0/0` to the NAT gateway. |
+| S3 gateway endpoint | Its policy allows only the input (read), the output prefix (read and write), and, without `internet_access`, ECR's layer bucket `prod-<region>-starport-layer-bucket`. |
+| Interface endpoints, private DNS on | `ec2`, `eks`, `eks-auth`, `ecr.api` and `ecr.dkr` (without `internet_access`), and, for the access host, `ssm`, `ssmmessages`, `ec2messages`. |
 | EKS cluster | Kubernetes 1.35, private endpoint, `API` authentication mode, standard support only, all control plane log types to a log group the stack owns. |
 | Add-ons | VPC CNI with `enableNetworkPolicy`, kube-proxy, EKS Pod Identity agent, CoreDNS, at EKS's default version for the Kubernetes version unless `addon_versions` pins them. |
 | Node groups | `system`: on demand, label `philterd.ai/node-pool=system`. `workers`: Spot, label `philterd.ai/node-pool=workers`, taint `philterd.ai/node-pool=workers:NoSchedule`. IMDSv2 with a hop limit of 1, encrypted gp3 volumes. |
@@ -102,7 +137,8 @@ details below. Run the commands from the repository's root unless a step changes
 | Helm releases | Argo Workflows (chart 2.0.18, v4.1.6, no server) in `argo`; Philter Batch in `philter-batch`. |
 | Output bucket | Only with `create_output_bucket = true`; kept on destroy. |
 
-Not created: the input bucket (only referenced), the ECR repositories (`scripts/push-images.sh`), the state bucket
+Not created: the input bucket (only referenced), the ECR repositories (`scripts/push-images.sh`, without
+`internet_access`), the state bucket
 (`state-bucket/`), load balancers, ingress, or persistent volumes. Nothing in the cluster creates AWS resources.
 
 The interface endpoints are those AWS lists for private clusters
@@ -125,7 +161,8 @@ on the documents. At minimum:
 
 - EKS: clusters, node groups, add-ons (`eks:DescribeAddonVersions`), access entries and access policy associations,
   Pod Identity associations.
-- EC2: VPCs, subnets, route tables, security groups and rules, VPC endpoints, launch templates, instances,
+- EC2: VPCs, subnets, route tables, security groups and rules, VPC endpoints, launch templates, instances, and
+  with `internet_access` internet gateways, NAT gateways, and Elastic IPs,
   `ec2:DescribeNetworkInterfaces` and `ec2:DeleteNetworkInterface` (the destroy-time cleanup), and the `Describe*`
   calls Terraform makes.
 - IAM: create, tag, and delete the five roles, their inline policies, attachments, and the access host's instance
@@ -134,7 +171,7 @@ on the documents. At minimum:
 - CloudWatch Logs: create, tag, and delete `/aws/eks/<name>/cluster`.
 - SSM: `ssm:GetParameter` on `/aws/service/ami-amazon-linux-latest/*`; `ssm:StartSession` on the access host with
   the `AWS-StartPortForwardingSessionToRemoteHost` document, and `ssm:TerminateSession` on its own sessions.
-- ECR: for `push-images.sh`, `ecr:GetAuthorizationToken`, and on the Philter Batch repositories
+- ECR (not with `internet_access`): for `push-images.sh`, `ecr:GetAuthorizationToken`, and on the Philter Batch repositories
   `ecr:DescribeRepositories`, `ecr:CreateRepository`, `ecr:BatchGetImage`, `ecr:BatchCheckLayerAvailability`,
   `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, and `ecr:PutImage`; for the plan,
   `ecr:DescribeImages` on them.
@@ -176,7 +213,9 @@ ignored by git: an engagement's values stay with the engagement.
 
 ## Images
 
-The nodes cannot reach the internet, so every image comes from the account's ECR, copied by digest beforehand:
+With `internet_access`, the nodes pull each image from its `source` in `images.yaml`, by digest, and nothing needs
+copying. Without it (the default), the nodes cannot reach the internet, so every image comes from the account's ECR,
+copied by digest beforehand:
 
 ```sh
 scripts/push-images.sh us-east-1
@@ -186,8 +225,8 @@ It copies into the ECR of the account your AWS CLI credentials belong to; see
 [Kubernetes](kubernetes.md#images) for what it does and for copying a philter-batch build before the image is
 published.
 
-The stack reads `deploy/helm/philter-batch/images.yaml` for the repositories, tags, and digests, and by default looks
-each image up in ECR at plan time, so a missing image fails the plan. While `images.yaml` does not pin a
+The stack reads `deploy/helm/philter-batch/images.yaml` for the sources, repositories, tags, and digests, and without
+`internet_access` looks each image up in ECR at plan time, so a missing image fails the plan. While `images.yaml` does not pin a
 `philter-batch` digest, give it in `image_digests`; a digest given for an image that `images.yaml` pins must equal it.
 `images.yaml` includes Argo's CRD installer (`argo-workflows-crdinstaller`), which Argo's chart runs as a Job before
 installing.
@@ -204,6 +243,7 @@ the philter-batch image is published, `image_digests["philter-batch"]`.
 | `output_bucket`, `output_prefix` | required, `philter-batch/` | Where runs write. Must not overlap the input. |
 | `output_kms_key_arns` | `[]` | SSE-KMS keys of the output. |
 | `create_output_bucket` | `false` | Create the output bucket (versioned, encrypted, kept on destroy). |
+| `internet_access` | `false` | Outbound internet through a NAT gateway, and images from their public registries. See [Internet access](#internet-access). |
 | `create_vpc` | `true` | Otherwise `vpc_id`, `subnet_ids` (two zones or more), `route_table_ids`. |
 | `vpc_cidr`, `availability_zone_count` | `10.80.0.0/16`, `2` | |
 | `create_vpc_endpoints` | `true` | Turn off only if the VPC already has all of them. |
@@ -217,7 +257,7 @@ the philter-batch image is published, `image_digests["philter-batch"]`.
 | `workers` | 4 pods, 4 CPUs, `6Gi`, 1 thread | The chart's worker pool. Keep `worker_nodes.desired_size` at or above `workers.count`; there is no autoscaler. |
 | `extra_chart_values` | `[]` | Further Philter Batch chart values, as YAML. |
 | `install_software` | `true` | `false` for the first apply through the access host. |
-| `check_images_in_ecr` | `true` | |
+| `check_images_in_ecr` | `true` | Not used with `internet_access`. |
 | `allow_destroy_while_running` | `false` | Skip the destroy check. Takes effect after an apply. |
 | `secrets_kms_key_arn` | null | A customer key for Kubernetes secrets; EKS envelope-encrypts API data with an AWS owned key otherwise. |
 | `cluster_log_types`, `cluster_log_retention_days` | all five, `90` | The log group is deleted with the stack. |
@@ -280,8 +320,9 @@ terraform destroy
   node groups and the cluster; then the network. Before the subnets are deleted, `scripts/cleanup-cni-enis.sh`
   deletes network interfaces the VPC CNI left behind (status `available`, tagged
   `node.k8s.amazonaws.com/instance_id`). The cluster's own security group is deleted by EKS with the cluster.
-- **Kept:** the input and output buckets, the state bucket, and the ECR repositories (delete those with
-  `aws ecr delete-repository --force` at the end of the engagement).
+- **Kept:** the input and output buckets, the state bucket, and the ECR repositories, if any (delete those with
+  `aws ecr delete-repository --force` at the end of the engagement). The NAT gateway and its Elastic IP are
+  destroyed with the stack.
 
 ## Troubleshooting
 
@@ -289,7 +330,7 @@ terraform destroy
 | --- | --- |
 | `apply` fails at the Helm releases with a connection error | The API is not reachable: start the port forward and set `kubernetes_api_server`, or use one of the other access paths. |
 | The plan fails in `data.aws_ecr_image` | An image is not in ECR at its digest: run `scripts/push-images.sh`. |
-| Pods stay `ImagePullBackOff` | The S3 endpoint policy or the `ecr.*` endpoints: an image was copied to another region or registry than `ecr_registry`. |
+| Pods stay `ImagePullBackOff` | Without `internet_access`: the S3 endpoint policy or the `ecr.*` endpoints, or an image was copied to another region or registry than `ecr_registry`. With it: no route to the internet (an existing VPC's subnets), or Docker Hub's pull limit ("You have reached your pull rate limit" in the pod's events). |
 | The console, Argo's controller, or a preflight, inventory, gate, or finalize pod stays `Pending` | The `system` group lacks room: they all run there, beside CoreDNS. Raise `system_nodes.desired_size` or use larger `system_nodes.instance_types`. |
 | Worker pods stay `Pending` | Fewer worker nodes than `workers.count`, or Spot capacity unavailable for the instance types: add types to `worker_nodes.instance_types`, or set `capacity_type = "ON_DEMAND"`. |
 | `check-store` fails with access denied | The workers' role, its Pod Identity association, or the network policy's egress to the Pod Identity agent (`169.254.170.23:80`). |

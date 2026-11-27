@@ -71,8 +71,14 @@ variable "create_output_bucket" {
 
 # --- Network -------------------------------------------------------------------------------------------------------
 
+variable "internet_access" {
+  description = "Give the nodes a route to the internet and pull the images from their public registries (Docker Hub and quay.io), by digest. False (the default): no route to the internet, and the images come from the account's ECR, copied there by scripts/push-images.sh. With create_vpc, true adds an internet gateway, a public subnet, and one NAT gateway; with an existing VPC, its subnets must already route to the internet."
+  type        = bool
+  default     = false
+}
+
 variable "create_vpc" {
-  description = "Create a VPC with private subnets and no route to the internet. When false, give vpc_id, subnet_ids, and route_table_ids."
+  description = "Create a VPC with private subnets (and, with internet_access, a NAT gateway). When false, give vpc_id, subnet_ids, and route_table_ids."
   type        = bool
   default     = true
 }
@@ -234,7 +240,7 @@ variable "worker_nodes" {
 # --- Images --------------------------------------------------------------------------------------------------------
 
 variable "ecr_registry" {
-  description = "The registry scripts/push-images.sh copied the images to. Null: this account's ECR registry in the region."
+  description = "The registry scripts/push-images.sh copied the images to. Null: this account's ECR registry in the region. Not used with internet_access."
   type        = string
   default     = null
 }
@@ -251,7 +257,7 @@ variable "image_digests" {
 }
 
 variable "check_images_in_ecr" {
-  description = "Look up each image in ECR at plan time, so a missing image fails the plan rather than a pod."
+  description = "Look up each image in ECR at plan time, so a missing image fails the plan rather than a pod. Not used with internet_access."
   type        = bool
   default     = true
 }

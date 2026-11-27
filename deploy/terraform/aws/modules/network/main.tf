@@ -1,5 +1,7 @@
-# Private subnets with no route to the internet: no internet gateway and no NAT gateway. Nodes reach AWS only
-# through the VPC endpoints below.
+# Private subnets for the nodes. By default they have no route to the internet: no internet gateway and no NAT
+# gateway, and nodes reach AWS only through the VPC endpoints below. With internet_access (and create_vpc), one NAT
+# gateway in a small public subnet gives them outbound access, for pulling images from public registries; the
+# endpoints are still used for AWS. Nothing is reachable from the internet: there is no inbound route to the nodes.
 
 locals {
   vpc_id          = var.create_vpc ? aws_vpc.this[0].id : var.vpc_id
@@ -7,6 +9,9 @@ locals {
   subnet_ids      = var.create_vpc ? aws_subnet.private[*].id : var.subnet_ids
   subnet_cidrs    = var.create_vpc ? aws_subnet.private[*].cidr_block : [for s in data.aws_subnet.existing : s.cidr_block]
   route_table_ids = var.create_vpc ? [aws_route_table.private[0].id] : var.route_table_ids
+  create_nat      = var.create_vpc && var.internet_access
+  # The public subnet is the VPC's last /20, after the private subnets (at most six /20s from the start).
+  public_subnet_cidr = var.create_vpc ? cidrsubnet(var.vpc_cidr, 4, 15) : null
 }
 
 data "aws_vpc" "existing" {
@@ -46,14 +51,85 @@ resource "aws_subnet" "private" {
   tags                    = merge(var.tags, { Name = "${var.name}-private-${var.availability_zones[count.index]}" })
 }
 
-# One route table with only the local route and, from the gateway endpoint, S3. `route = []` makes Terraform remove
-# any other route added later, such as a default route to a NAT or internet gateway. The provider leaves gateway
-# endpoint routes out of this attribute, so the S3 route is unaffected.
+# One route table with the local route, S3 from the gateway endpoint, and, with internet_access only, a default
+# route to the NAT gateway. Setting `route` as an attribute makes Terraform remove any other route added later, such
+# as a default route to a NAT or internet gateway when internet_access is off. The provider leaves gateway endpoint
+# routes out of this attribute, so the S3 route is unaffected.
 resource "aws_route_table" "private" {
   count  = var.create_vpc ? 1 : 0
   vpc_id = aws_vpc.this[0].id
-  route  = []
-  tags   = merge(var.tags, { Name = "${var.name}-private" })
+  route = local.create_nat ? [{
+    cidr_block                 = "0.0.0.0/0"
+    nat_gateway_id             = aws_nat_gateway.this[0].id
+    ipv6_cidr_block            = null
+    destination_prefix_list_id = null
+    carrier_gateway_id         = null
+    core_network_arn           = null
+    egress_only_gateway_id     = null
+    gateway_id                 = null
+    local_gateway_id           = null
+    network_interface_id       = null
+    transit_gateway_id         = null
+    vpc_endpoint_id            = null
+    vpc_peering_connection_id  = null
+    odb_network_arn            = null
+  }] : []
+  tags = merge(var.tags, { Name = "${var.name}-private" })
+}
+
+# --- internet_access only: an internet gateway, a public subnet, and one NAT gateway ---------------------------------
+# One NAT gateway, in the first zone, is enough for a temporary stack: if that zone fails, image pulls fail and the
+# run resumes when pods can start again.
+
+resource "aws_internet_gateway" "this" {
+  count  = local.create_nat ? 1 : 0
+  vpc_id = aws_vpc.this[0].id
+  tags   = merge(var.tags, { Name = var.name })
+}
+
+resource "aws_subnet" "public" {
+  count                   = local.create_nat ? 1 : 0
+  vpc_id                  = aws_vpc.this[0].id
+  availability_zone       = var.availability_zones[0]
+  cidr_block              = local.public_subnet_cidr
+  map_public_ip_on_launch = false # only the NAT gateway has a public address
+  tags                    = merge(var.tags, { Name = "${var.name}-public-${var.availability_zones[0]}" })
+}
+
+resource "aws_route_table" "public" {
+  count  = local.create_nat ? 1 : 0
+  vpc_id = aws_vpc.this[0].id
+  tags   = merge(var.tags, { Name = "${var.name}-public" })
+}
+
+resource "aws_route" "public_internet" {
+  count                  = local.create_nat ? 1 : 0
+  route_table_id         = aws_route_table.public[0].id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.this[0].id
+}
+
+resource "aws_route_table_association" "public" {
+  count          = local.create_nat ? 1 : 0
+  subnet_id      = aws_subnet.public[0].id
+  route_table_id = aws_route_table.public[0].id
+}
+
+resource "aws_eip" "nat" {
+  count  = local.create_nat ? 1 : 0
+  domain = "vpc"
+  tags   = merge(var.tags, { Name = "${var.name}-nat" })
+
+  depends_on = [aws_internet_gateway.this]
+}
+
+resource "aws_nat_gateway" "this" {
+  count         = local.create_nat ? 1 : 0
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public[0].id
+  tags          = merge(var.tags, { Name = var.name })
+
+  depends_on = [aws_internet_gateway.this, aws_route_table_association.public]
 }
 
 resource "aws_route_table_association" "private" {
