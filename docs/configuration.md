@@ -6,7 +6,7 @@ Helm chart), the console's `configure` stores it in the bucket and every pod rea
 ignored. `examples/run.yaml` lists every setting with its default.
 
 Workers check their configuration against the settings the run was inventoried with (`run.json`, see
-[formats](formats.md)) and refuse to start if the output mode, charset, or extensions differ. The policy is read from the run, not from each worker's file.
+[formats](formats.md)) and refuse to start if the output mode, charset, handled types, or extensions differ. The policy is read from the run, not from each worker's file.
 
 ## Required
 
@@ -34,7 +34,7 @@ input and read, write, and delete access under the output prefix.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `output.mode` | `text` | `text`: redacted text as JSONL ([record schema](record-schema.md)). `document`: a redacted file of the same type for each input, under `documents/`. `both`: both, from one redaction. |
+| `output.mode` | `text` | `text`: redacted text as JSONL ([record schema](record-schema.md)). `document`: a redacted file of the same type for each input, under `documents/`. `both`: both, from one redaction; plain text only, so it is refused when `input_types.handled` names another type. |
 
 ## Policy and models
 
@@ -47,8 +47,62 @@ input and read, write, and delete access under the output prefix.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `plain_text.extensions` | `[txt, md, log]` | The extensions handled, compared ignoring case. Every other object is recorded as skipped (`UNSUPPORTED_TYPE`) and never read or copied. |
+| `plain_text.extensions` | `[txt, md, log]` | The extensions of plain text, compared ignoring case. An object whose extension names no handled type is recorded as skipped (`UNSUPPORTED_TYPE`) and never read or copied. |
 | `plain_text.charset` | `UTF-8` | The input's character set. A file that does not decode in it is quarantined (`UNDECODABLE`). Document output is written in the same character set. |
+
+## Input types
+
+By default a run redacts plain text only. `input_types.handled` adds other types, each redacted with its Phileas
+service.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `input_types.handled` | `[text]` | The types redacted: `text`, `csv`, `pdf`, `docx` (Word), `xlsx` (Excel), `rtf`, and `email` (MIME `.eml` and Outlook `.msg`). |
+| `input_types.extensions` | each type's own | Extensions per type, replacing its defaults: `csv: [csv]`, `pdf: [pdf]`, `docx: [docx]`, `xlsx: [xlsx]`, `rtf: [rtf]`, `email: [eml, msg]`. Plain text's are `plain_text.extensions`. An extension may name one handled type only. |
+| `input_types.max_document_bytes` | 256 MiB | Files of a type other than plain text larger than this are skipped (`TOO_LARGE`), as are files over `inventory.max_file_bytes`. Under 2 GiB. |
+
+Inventory chooses files by extension and does not read them. In a run that handles a type other than plain text,
+a worker detects each whole file's type from its content and redacts it as that type (a plain-text-only run reads
+every file as text, as before):
+
+- PDF by its `%PDF-` header, RTF by `{\rtf`, Word and Excel by Phileas's own check of the OPC package, and Outlook
+  messages by the OLE2 signature, only for an email extension (OLE2 is also the format of legacy `.doc` and `.xls`
+  files and of encrypted Word and Excel files, which are not handled).
+- Plain text, CSV, and MIME email have no signature, so a file without one is the type its extension names.
+- A file whose content is a different handled type than its extension names is redacted as its content, and
+  `type_mismatch` is recorded in its result and the manifest. Its redacted document takes the content type's
+  extension.
+- A file whose content no handled type recognizes, such as a `.pdf` without a PDF header, a ZIP that is not a Word
+  document or workbook, or PDF content in a run that does not handle `pdf`, is quarantined (`UNSUPPORTED_CONTENT`).
+
+Detection uses the checks the Phileas services use, so a file goes only to a service that accepts its format.
+Tika was not used: `tika-core` without its parsers cannot tell a Word document from an Excel workbook, which are
+both ZIP files, and Word and Excel can only be told apart from the whole file, which is why detection happens in
+the worker and not in inventory.
+
+Each file of these types is one entry, read whole into memory: unlike plain text, it is not split. Size the
+workers' memory for `worker.threads` files of up to `max_document_bytes` at once, plus Phileas's working copies.
+Plain-text segments are always plain text, without detection.
+
+In `text` output, a document's record holds its redacted text in sections, such as `page 1` or `body`, with where
+each one is in the record's text ([record schema](record-schema.md)). In `document` output, the redacted file is
+of the same type, except that an Outlook message is written as MIME (`.eml`), and a PDF's redacted pages are
+images, so their text cannot be read back. A redacted CSV is written in the policy's encoding, and its content type
+has no charset. A
+CSV's delimiter, quote, and encoding come from the policy's `config.csv`, not from `plain_text.charset`.
+
+A section Phileas finds no text in, such as a scanned page, is `no_text`: it is empty and not redacted. In `text`
+output such sections are counted in the report (`sections_without_text`); in `document` output Phileas does not
+report them, so they are not counted. OCR is not supported.
+
+Phileas's own limits apply, at its defaults: a PDF of more than 2,000 pages and a CSV of more than 1,000,000 rows,
+among others, are quarantined (`LIMIT_EXCEEDED`). A CSV is read whole, so a large one is better handled as plain
+text, by listing `csv` in `plain_text.extensions` instead, where it is split into segments and redacted line by
+line rather than by column.
+
+Quarantine reasons for these types, besides those of plain text: `UNSUPPORTED_CONTENT`, `ENCRYPTED` (an encrypted
+message or a password-protected PDF), `MALFORMED` (not valid in its format), and `LIMIT_EXCEEDED` (over one of
+Phileas's limits, such as on pages or rows). Other Phileas failures are `REDACTION_FAILED`.
 
 ## Inventory
 

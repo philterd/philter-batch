@@ -26,6 +26,12 @@ plain_text:
   extensions: [txt, md, log]
   charset: UTF-8
 
+# Types beyond plain text, each redacted with its Phileas service. See docs/configuration.md#input-types.
+input_types:
+  handled: [text]                   # text, csv, pdf, docx, xlsx, rtf, email
+  extensions: {}                    # such as {pdf: [pdf], email: [eml, msg]}; plain text's are plain_text's
+  max_document_bytes: 268435456     # 256 MiB; such files are read whole
+
 inventory:
   shard_target_bytes: 134217728     # 128 MiB
   max_entries_per_shard: 10000

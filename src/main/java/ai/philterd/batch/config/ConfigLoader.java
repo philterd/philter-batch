@@ -3,6 +3,7 @@
  */
 package ai.philterd.batch.config;
 
+import ai.philterd.batch.run.DocumentType;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -17,7 +18,9 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /** Reads and checks a run's YAML configuration. */
@@ -180,6 +183,7 @@ public final class ConfigLoader {
         } catch (final IllegalArgumentException e) {
             throw new ConfigException("plain_text.charset is not a supported character set: " + c.plainText().charset());
         }
+        validateInputTypes(c);
         final RunConfig.Inventory i = c.inventory();
         positive("inventory.shard_target_bytes", i.shardTargetBytes());
         positive("inventory.max_entries_per_shard", i.maxEntriesPerShard());
@@ -221,6 +225,59 @@ public final class ConfigLoader {
         if (!sample.currency().matches("[A-Za-z]{1,10}")) {
             throw new ConfigException("sample.currency must be 1 to 10 letters, such as USD.");
         }
+    }
+
+    private static void validateInputTypes(final RunConfig c) {
+        final RunConfig.InputTypes t = c.inputTypes();
+        if (t.handled().isEmpty()) {
+            throw new ConfigException("input_types.handled must name at least one type.");
+        }
+        for (final String name : t.handled()) {
+            if (DocumentType.of(name).isEmpty()) {
+                throw new ConfigException("input_types.handled: '" + name + "' is not a type. The types are "
+                        + typeNames() + ".");
+            }
+        }
+        for (final Map.Entry<String, List<String>> e : t.extensions().entrySet()) {
+            final DocumentType type = DocumentType.of(e.getKey()).orElseThrow(() -> new ConfigException(
+                    "input_types.extensions: '" + e.getKey() + "' is not a type. The types are " + typeNames() + "."));
+            if (type == DocumentType.TEXT) {
+                throw new ConfigException("input_types.extensions cannot set text's: use plain_text.extensions.");
+            }
+            if (e.getValue().isEmpty()) {
+                throw new ConfigException("input_types.extensions." + e.getKey() + " must name at least one extension.");
+            }
+            for (final String extension : e.getValue()) {
+                if (!EXTENSION.matcher(extension).matches()) {
+                    throw new ConfigException("input_types.extensions." + e.getKey() + ": '" + extension
+                            + "' must be 1 to 10 letters or digits.");
+                }
+            }
+        }
+        // An extension names one handled type, so inventory knows what each file is meant to be.
+        final Map<String, DocumentType> owner = new HashMap<>();
+        for (final DocumentType type : t.types()) {
+            for (final String extension : c.extensions(type)) {
+                final DocumentType other = owner.putIfAbsent(extension, type);
+                if (other != null) {
+                    throw new ConfigException("The extension '" + extension + "' is listed for both " + other.json()
+                            + " and " + type.json() + ".");
+                }
+            }
+        }
+        positive("input_types.max_document_bytes", t.maxDocumentBytes());
+        if (t.maxDocumentBytes() > Integer.MAX_VALUE - 8) {
+            throw new ConfigException("input_types.max_document_bytes must be under 2 GiB: such files are read whole.");
+        }
+        if (c.output().mode() == RunConfig.OutputMode.BOTH && t.beyondPlainText()) {
+            throw new ConfigException("output.mode both is for plain text only: with other input types, use text or "
+                    + "document.");
+        }
+    }
+
+    private static String typeNames() {
+        return java.util.Arrays.stream(DocumentType.values()).map(DocumentType::json)
+                .collect(java.util.stream.Collectors.joining(", "));
     }
 
     private static void positive(final String name, final Number value) {

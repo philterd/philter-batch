@@ -4,15 +4,20 @@
 package ai.philterd.batch.inventory;
 
 import ai.philterd.batch.config.ConfigLoader;
+import ai.philterd.batch.config.RunConfig;
+import ai.philterd.batch.run.DocumentType;
 
 import java.nio.charset.Charset;
 import java.util.Arrays;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Locale;
 
 /**
- * Decides which input objects are plain text, by extension. Provisional: whether to use extensions,
- * {@code tika-core}'s detection, or both is an open decision on the design page.
+ * Decides which input objects a run redacts, and as which type, by extension. Inventory does not read the files: a
+ * worker detects each file's type from its content when it redacts it (see DocumentTypes), since a Word document
+ * or Excel workbook can only be told apart from the whole file.
  */
 public final class Classifier {
 
@@ -20,10 +25,17 @@ public final class Classifier {
     public static final String OTHER = "(other)";
     public static final String NONE = "(none)";
 
-    private final List<String> extensions;
+    private final Map<String, DocumentType> types = new HashMap<>();
 
-    public Classifier(final List<String> extensions) {
-        this.extensions = List.copyOf(extensions);
+    public Classifier(final RunConfig config) {
+        for (final DocumentType type : config.inputTypes().types()) {
+            config.extensions(type).forEach(extension -> types.put(extension, type));
+        }
+    }
+
+    /** The handled type an extension names, if any. */
+    public Optional<DocumentType> type(final String extension) {
+        return Optional.ofNullable(types.get(extension));
     }
 
     /** The key's extension, lowercased, or {@link #NONE} or {@link #OTHER}. */
@@ -37,8 +49,8 @@ public final class Classifier {
         return ConfigLoader.EXTENSION.matcher(extension).matches() ? extension : OTHER;
     }
 
-    public boolean isPlainText(final String extension) {
-        return extensions.contains(extension);
+    public boolean isHandled(final String extension) {
+        return types.containsKey(extension);
     }
 
     /** A key ending in a slash: a folder placeholder some tools create, not a file. */

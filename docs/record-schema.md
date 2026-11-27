@@ -20,11 +20,32 @@ specifies `schema_version` **1**. The Java record is `TextRecord` in
 | `document_id` | string | Opaque: 32 hex characters, the same for every segment of one input file. Keyed per run, so IDs from different runs cannot be joined. |
 | `segment` | integer | The segment number, from 0. |
 | `segments` | integer | How many segments the file was split into; 1 for a whole file. |
-| `type` | string | The input's type. `text` in this version. |
-| `text` | string | The redacted text. For a segment, the lines that start in its byte range, each through its newline, so a file's segments concatenated in order are the whole redacted file. |
+| `type` | string | The type the input was redacted as, detected from its content: `text`, `csv`, `pdf`, `docx`, `xlsx`, `rtf`, or `email`. |
+| `text` | string | The redacted text. For a segment, the lines that start in its byte range, each through its newline, so a file's segments concatenated in order are the whole redacted file. For another type, its sections' text, separated by a blank line. |
 | `pii_counts` | object | Values replaced, by Phileas filter type (such as `person`, `email-address`, `ssn`). Empty when nothing was replaced. |
 | `run_id` | string | The run. |
 | `policy` | string | `sha256:` and the SHA-256 of the policy file's bytes. |
+| `sections` | array | For a type other than plain text, where each section of the document is in `text`, in order (below). Absent for plain text. |
+
+A section is `{"label": "page 1", "status": "text", "start": 0, "end": 1834}`: characters `start` to `end` of
+`text`, in UTF-16 code units, end exclusive.
+
+- `label`: what the section is, from Phileas, such as `page N` (PDF); `body`, `headers`, `footers`, `footnotes`
+  (Word); `body`, `headers and footers` (RTF); `sheet N` (Excel); `rows` (CSV); `headers`, `body`,
+  `attached message N / ...`, and `attachment N / ...` (email). The Phileas documentation for each format lists
+  them all. Phileas's labels name sheets and attachments, which
+  can hold names and are not redacted, so they are numbered instead, in the order they appear: `sheet 1`,
+  `attachment 2 / page 1`.
+- `status`: `text`; `no_text`, a section with no text that could be read, such as a scanned page, which is empty
+  and was not redacted; or `not_scanned`, a section the policy left out, which is empty.
+
+```json
+{"schema_version": 1, "id": "0d4f...", "document_id": "0d4f...", "segment": 0, "segments": 1, "type": "pdf",
+ "text": "Write to {{{REDACTED-email-address}}} about the order.",
+ "pii_counts": {"email-address": 1}, "run_id": "model-run", "policy": "sha256:c2e4...",
+ "sections": [{"label": "page 1", "status": "text", "start": 0, "end": 54},
+              {"label": "page 2", "status": "no_text", "start": 54, "end": 54}]}
+```
 
 What is not in a record:
 
@@ -35,8 +56,9 @@ What is not in a record:
 - No record for a quarantined or empty input. Its status and reason code are in the done markers, the manifest,
   and `report.json`.
 
-Each value is replaced consistently within one record. The same value in different records, or in different
-segments of one file, may get a different replacement, depending on the policy's strategies.
+Whether a value gets the same replacement each time depends on the policy's strategies. Each record is redacted
+with its own Phileas context, so a strategy with `replacementScope: CONTEXT` is consistent within one record and
+not across records or segments.
 
 Redaction is probabilistic: a record can still contain sensitive values the policy did not detect. Validate
 output against your own data before use.

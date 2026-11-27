@@ -5,6 +5,7 @@ package ai.philterd.batch.inventory;
 
 import ai.philterd.batch.config.ConfigException;
 import ai.philterd.batch.config.RunConfig;
+import ai.philterd.batch.run.DocumentType;
 import ai.philterd.batch.run.Formats;
 import ai.philterd.batch.run.Formats.InventorySummary;
 import ai.philterd.batch.run.Formats.RunSettings;
@@ -72,7 +73,7 @@ public final class Inventory {
         putOnce(layout.settings(), Json.write(settings(config, policySha256)), "application/json", null);
         final byte[] secret = idSecret();
 
-        final Classifier classifier = new Classifier(config.plainText().extensions());
+        final Classifier classifier = new Classifier(config);
         final boolean splittable = Classifier.splittable(config.plainText().charsetValue());
         final RunConfig.Inventory limits = config.inventory();
 
@@ -89,21 +90,25 @@ public final class Inventory {
                 continue;
             }
             final String extension = Classifier.extension(object.key());
-            final boolean plainText = classifier.isPlainText(extension);
+            final Optional<DocumentType> type = classifier.type(extension);
             final long[] count = byExtension.computeIfAbsent(extension, e -> new long[2]);
             count[0]++;
             count[1] += object.size();
-            if (!plainText) {
+            if (type.isEmpty()) {
                 skip(skipped, skippedByReason, object, extension, SkipReason.UNSUPPORTED_TYPE);
             } else if (object.size() == 0) {
                 skip(skipped, skippedByReason, object, extension, SkipReason.EMPTY_FILE);
-            } else if (object.size() > limits.maxFileBytes()) {
+            } else if (object.size() > limits.maxFileBytes() || (type.get() != DocumentType.TEXT
+                    && object.size() > config.inputTypes().maxDocumentBytes())) {
                 skip(skipped, skippedByReason, object, extension, SkipReason.TOO_LARGE);
             } else {
                 documents++;
                 bytes += object.size();
                 final String id = Hashes.documentId(secret, config.input().bucket(), object.key(), object.etag());
-                entries.addAll(segments(id, object, extension, splittable ? limits.segmentBytes() : Long.MAX_VALUE));
+                // Only plain text is split: every other type is redacted whole.
+                final long segmentBytes = type.get() == DocumentType.TEXT && splittable ? limits.segmentBytes()
+                        : Long.MAX_VALUE;
+                entries.addAll(segments(id, object, extension, segmentBytes));
             }
         }
 
@@ -147,7 +152,7 @@ public final class Inventory {
         writeSkipped(skipped);
 
         final Map<String, TypeCount> types = new TreeMap<>();
-        byExtension.forEach((ext, c) -> types.put(ext, new TypeCount(c[0], c[1], classifier.isPlainText(ext))));
+        byExtension.forEach((ext, c) -> types.put(ext, new TypeCount(c[0], c[1], classifier.isHandled(ext))));
         final InventorySummary summary = new InventorySummary(Formats.FORMAT, config.runId(), clock.instant(),
                 plan.size(), documents, entries.size(), bytes, types, skippedByReason, skipped.size(), sampleShards,
                 sampleShards, sampleBytes);
@@ -171,8 +176,16 @@ public final class Inventory {
 
     /** The settings recorded with a run, which workers check their configuration against. */
     public static RunSettings settings(final RunConfig config, final String policySha256) {
+        // Recorded only beyond plain text, so a plain-text run's run.json is what it was before other types.
+        Map<String, List<String>> types = null;
+        if (config.inputTypes().beyondPlainText() || !config.inputTypes().types().contains(DocumentType.TEXT)) {
+            types = new TreeMap<>();
+            for (final DocumentType type : config.inputTypes().types()) {
+                types.put(type.json(), config.extensions(type));
+            }
+        }
         return new RunSettings(Formats.FORMAT, config.runId(), config.output().mode().json(),
-                config.plainText().charsetValue().name(), config.plainText().extensions(), policySha256);
+                config.plainText().charsetValue().name(), config.plainText().extensions(), policySha256, types);
     }
 
     /** The entries for one file: the whole file, or segments of about {@code segmentBytes}. */

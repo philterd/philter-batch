@@ -70,11 +70,29 @@ public final class Formats {
      *               quarantined without being read ({@code POISON}).
      * @param replacements Where the replacements are in the redacted text, by type. Recorded for sample entries
      *                     only, for the sample report. Never holds a value.
+     * @param type The type the entry was redacted as, detected from its content, when it is not plain text.
+     *             Absent for plain text, and for an entry quarantined before its type was known.
+     * @param typeMismatch Whether the content's type differs from the type its extension names.
+     * @param sectionsWithoutText Sections (such as pages) Phileas found no text in, such as scanned pages, which
+     *                            were not redacted. Absent for plain text and when there were none.
      */
     public record DocumentResult(int entry, String documentId, int segment, int segments, String status,
                                  String reason, Map<String, Integer> piiCounts, Map<String, Integer> leftoverCounts,
                                  Boolean leftoverChecked, boolean record, String staged, Long micros,
-                                 List<Replacement> replacements) {
+                                 List<Replacement> replacements, String type, Boolean typeMismatch,
+                                 Integer sectionsWithoutText) {
+
+        /** This result with how long the entry took. */
+        public DocumentResult withMicros(final long elapsed) {
+            return new DocumentResult(entry, documentId, segment, segments, status, reason, piiCounts, leftoverCounts,
+                    leftoverChecked, record, staged, elapsed, replacements, type, typeMismatch, sectionsWithoutText);
+        }
+
+        /** This result with the sample's replacement positions. */
+        public DocumentResult withReplacements(final List<Replacement> positions) {
+            return new DocumentResult(entry, documentId, segment, segments, status, reason, piiCounts, leftoverCounts,
+                    leftoverChecked, record, staged, micros, positions, type, typeMismatch, sectionsWithoutText);
+        }
 
         public static final String REDACTED = "redacted";
         public static final String QUARANTINED = "quarantined";
@@ -130,9 +148,12 @@ public final class Formats {
         }
     }
 
-    /** The settings a run was inventoried with. Every worker checks its own configuration against them. */
+    /**
+     * The settings a run was inventoried with. Every worker checks its own configuration against them.
+     * @param types The handled types and their extensions. Absent when the run handles plain text only.
+     */
     public record RunSettings(int format, String runId, String outputMode, String charset,
-                              List<String> extensions, String policySha256) {
+                              List<String> extensions, String policySha256, Map<String, List<String>> types) {
     }
 
     /** Counts and bytes for one extension in the input. */
@@ -158,7 +179,7 @@ public final class Formats {
 
     /** One line of {@code manifest/documents-NNNNNN.jsonl}: the only place an output ID meets its key. */
     public record ManifestEntry(String documentId, String key, String etag, long size, int segment, int segments,
-                                String status, String reason, String document) {
+                                String status, String reason, String document, String type, Boolean typeMismatch) {
     }
 
     /**
@@ -167,13 +188,19 @@ public final class Formats {
      * @param quarantineMaxPercent The run's {@code quarantine.max_percent}. Absent from reports written before it
      *                             existed, as are the other two.
      * @param quarantineLimitExceeded Whether {@code quarantinedPercent} is above {@code quarantineMaxPercent}.
+     * @param entriesByType Entries redacted, by the type they were redacted as. Absent for a plain-text-only run.
+     * @param typeMismatches Entries whose content's type differed from their extension's. Absent likewise.
+     * @param sectionsWithoutText Sections Phileas found no text in, which were not redacted. Absent likewise.
+     * @param entriesWithSectionsWithoutText Entries with at least one such section. Absent likewise.
      */
     public record Report(int format, String runId, Instant completed, String outputMode, int shards,
                          long documents, long entries, Map<String, Long> entriesByStatus,
                          Map<String, Long> quarantinedByReason, Map<String, Long> skippedByReason,
                          Map<String, Long> piiCounts, long leftoverChecked, long records, long documentsWritten,
                          long documentsWithheld, long partsDeleted, long stagedDeleted, Double quarantinedPercent,
-                         Double quarantineMaxPercent, Boolean quarantineLimitExceeded) {
+                         Double quarantineMaxPercent, Boolean quarantineLimitExceeded,
+                         Map<String, Long> entriesByType, Long typeMismatches, Long sectionsWithoutText,
+                         Long entriesWithSectionsWithoutText) {
     }
 
     /** {@code _SUCCESS}: what produced the output. */
@@ -236,9 +263,26 @@ public final class Formats {
     public record ModelInfo(String name, String onnxSha256) {
     }
 
-    /** One line of a JSONL part: a redacted text. See {@code docs/record-schema.md}. */
+    /**
+     * One line of a JSONL part: a redacted text. See {@code docs/record-schema.md}.
+     * @param sections Where each of a document's sections (pages, sheets, body, attachments) is in {@code text}.
+     *                 Absent for plain text.
+     */
     public record TextRecord(int schemaVersion, String id, String documentId, int segment, int segments, String type,
-                             String text, Map<String, Integer> piiCounts, String runId, String policy) {
+                             String text, Map<String, Integer> piiCounts, String runId, String policy,
+                             List<Section> sections) {
+    }
+
+    /**
+     * One section of a document's redacted text: characters {@code start} to {@code end} of the record's text,
+     * exclusive.
+     * @param label Phileas's label, such as {@code page 1}, {@code body}, {@code sheet: People}, or
+     *              {@code attachment: report.pdf / page 1}. Labels can hold names from the document, such as a
+     *              sheet's or an attachment's, which are not redacted.
+     * @param status {@code text}, {@code no_text} (nothing could be read, such as a scanned page; empty and not
+     *               redacted), or {@code not_scanned} (left out by the policy).
+     */
+    public record Section(String label, String status, int start, int end) {
     }
 
 }

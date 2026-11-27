@@ -6,6 +6,7 @@ package ai.philterd.batch.finalize;
 import ai.philterd.batch.ExitCodes;
 import java.util.Locale;
 import ai.philterd.batch.config.RunConfig;
+import ai.philterd.batch.run.DocumentType;
 import ai.philterd.batch.run.FormatException;
 import ai.philterd.batch.run.Formats;
 import ai.philterd.batch.run.Formats.DocumentResult;
@@ -163,7 +164,12 @@ public final class Finalizer {
                 if (sources.isEmpty()) {
                     continue;
                 }
-                final String target = layout.document(e.getKey(), pieces.getFirst().entry().extension());
+                // A document of another type is one piece, named and typed for what it was redacted as.
+                final DocumentType type = DocumentType.of(pieces.getFirst().result().type()).orElse(DocumentType.TEXT);
+                final String target = layout.document(e.getKey(),
+                        type.outputExtension(pieces.getFirst().entry().extension(),
+                                Boolean.TRUE.equals(pieces.getFirst().result().typeMismatch())));
+                final String contentType = type.contentType(config.plainText().charsetValue());
                 documentKeys.put(e.getKey(), target);
                 if (existing.contains(target) && sources.stream().noneMatch(staging::contains)) {
                     continue;
@@ -172,8 +178,7 @@ public final class Finalizer {
                     LOGGER.error("Document {} has staged pieces missing; the run's output is inconsistent.", e.getKey());
                     return ExitCodes.ERROR;
                 }
-                composes.add(() -> store.compose(layout.bucket(), target, sources, "text/plain; charset="
-                        + config.plainText().charsetValue().name()));
+                composes.add(() -> store.compose(layout.bucket(), target, sources, contentType));
             }
             if (!runAll(composes)) {
                 return ExitCodes.ERROR;
@@ -192,6 +197,12 @@ public final class Finalizer {
         long records = 0;
         long entries = 0;
         long leftoverChecked = 0;
+        final Map<String, Long> byType = new TreeMap<>();
+        long mismatches = 0;
+        long withoutText = 0;
+        long entriesWithoutText = 0;
+        // Recorded in the report only for a run that handles more than plain text, as its run.json records.
+        final boolean beyondText = settings.types() != null;
         for (final Map.Entry<String, DoneMarker> e : done.entrySet()) {
             final List<ShardEntry> shardEntries = shards.get(e.getKey()).entries();
             final ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -211,13 +222,24 @@ public final class Finalizer {
                 if (Boolean.TRUE.equals(r.leftoverChecked())) {
                     leftoverChecked++;
                 }
+                if (DocumentResult.REDACTED.equals(r.status())) {
+                    byType.merge(r.type() == null ? DocumentType.TEXT.json() : r.type(), 1L, Long::sum);
+                }
+                if (Boolean.TRUE.equals(r.typeMismatch())) {
+                    mismatches++;
+                }
+                if (r.sectionsWithoutText() != null) {
+                    withoutText += r.sectionsWithoutText();
+                    entriesWithoutText++;
+                }
                 String reason = r.reason();
                 if (reason == null && config.output().mode().document() && DocumentResult.REDACTED.equals(r.status())
                         && !documentKeys.containsKey(r.documentId())) {
                     reason = ReasonCode.SEGMENT_QUARANTINED.name();
                 }
                 out.writeBytes(Json.write(new ManifestEntry(r.documentId(), entry.key(), entry.etag(), entry.size(),
-                        r.segment(), r.segments(), r.status(), reason, documentKeys.get(r.documentId()))));
+                        r.segment(), r.segments(), r.status(), reason, documentKeys.get(r.documentId()), r.type(),
+                        r.typeMismatch())));
                 out.write('\n');
             }
             store.put(layout.bucket(), layout.manifestDocuments(e.getKey()), out.toByteArray(), "application/x-ndjson");
@@ -234,7 +256,8 @@ public final class Finalizer {
                 shardIds.size(), inventory.documents(), entries, byStatus, byReason, inventory.skippedByReason(), pii,
                 leftoverChecked, records, documentKeys.size(), withheld, partsDeleted, stagedDeleted,
                 RunConfig.Quarantine.percent(quarantined, entries), limit.maxPercent(),
-                limit.exceeded(quarantined, entries));
+                limit.exceeded(quarantined, entries), beyondText ? byType : null, beyondText ? mismatches : null,
+                beyondText ? withoutText : null, beyondText ? entriesWithoutText : null);
         store.put(layout.bucket(), layout.report(), Json.write(report), "application/json");
         final Success success = new Success(Formats.FORMAT, config.runId(), clock.instant(), settings.policySha256(),
                 phileasVersion, pheyeOnnxVersion, models, System.getenv("PHILTER_BATCH_IMAGE_DIGEST"),

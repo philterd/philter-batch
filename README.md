@@ -5,20 +5,22 @@ runs [Phileas](https://github.com/philterd/phileas) and the PhEye model in-proce
 server, and it keeps all of its coordination state in the same object storage as the data, so it needs no
 database or queue. A run can be stopped and resumed on any machine that can reach the bucket.
 
-This first version handles plain text files in Amazon S3 (or an S3-compatible store). Other files are recorded
-as skipped and never copied. A run can be driven step by step, in one process, or on Kubernetes with Argo
+It redacts plain text files in Amazon S3 (or an S3-compatible store) and, when configured, CSV, PDF, Word
+(`.docx`), Excel (`.xlsx`), RTF, and email (`.eml` and `.msg`) files, each with its Phileas service
+([input types](docs/configuration.md#input-types)). Other files are recorded as skipped and never copied. A run can be driven step by step, in one process, or on Kubernetes with Argo
 Workflows, the Helm chart in `deploy/helm/philter-batch`, and its console pod ([Kubernetes](docs/kubernetes.md)).
 
 ## How a run works
 
-1. **Inventory** lists the input, chooses the plain-text files by extension, splits large files into line-range
-   segments, chooses a sample (50 entries by default, spread across file types and sizes), and writes shards of
+1. **Inventory** lists the input, chooses the files of the handled types by extension, splits large plain-text
+   files into line-range segments, chooses a sample (50 entries by default, spread across file types and sizes), and writes shards of
    about 128 MiB each.
 2. **Sample.** The sample is redacted first, into `sample/`, with a JSON report and a self-contained HTML report:
    the redacted text with the replacements highlighted by type, counts, quarantines, the measured throughput, and
    the estimated time and cost of the rest. The run waits until a person approves the sample, or ends if they
    reject it.
-3. **Workers** claim shards through conditional writes to the store, redact each file with Phileas, and write
+3. **Workers** claim shards through conditional writes to the store, detect each file's type from its content,
+   redact it with Phileas, and write
    redacted text as JSONL, a redacted file of the same type, or both. A file that cannot be decoded or
    redacted is quarantined with a reason code, and nothing is written for it. The sample is not redone.
 4. **Finalize** removes output from workers that lost their shards, assembles redacted documents, and writes a

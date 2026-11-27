@@ -3,11 +3,17 @@
  */
 package ai.philterd.batch.config;
 
+import ai.philterd.batch.run.DocumentType;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 import java.nio.charset.Charset;
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * A run's configuration, read from YAML. Every setting but the run ID, the input and output locations, and the
@@ -22,6 +28,7 @@ public record RunConfig(
         String modelsDirectory,
         List<String> policyFilesDirectories,
         PlainText plainText,
+        InputTypes inputTypes,
         Inventory inventory,
         Lease lease,
         Worker worker,
@@ -35,6 +42,7 @@ public record RunConfig(
         modelsDirectory = modelsDirectory == null ? "/opt/philter-batch/models" : modelsDirectory;
         policyFilesDirectories = policyFilesDirectories == null ? List.of() : List.copyOf(policyFilesDirectories);
         plainText = plainText == null ? new PlainText(null, null) : plainText;
+        inputTypes = inputTypes == null ? new InputTypes(null, null, null) : inputTypes;
         inventory = inventory == null ? new Inventory(null, null, null, null, null) : inventory;
         lease = lease == null ? new Lease(null, null, null, null, null, null) : lease;
         worker = worker == null ? new Worker(null, null, null, null, null, null) : worker;
@@ -43,16 +51,22 @@ public record RunConfig(
         quarantine = quarantine == null ? new Quarantine(null) : quarantine;
     }
 
+    /** The extensions of a type: {@code plain_text.extensions} for plain text, else its configured or default ones. */
+    public List<String> extensions(final DocumentType type) {
+        return type == DocumentType.TEXT ? plainText.extensions()
+                : inputTypes.extensions().getOrDefault(type.json(), type.defaultExtensions());
+    }
+
     /** This configuration with the worker's settings replaced, for the per-pod settings a deployment sets. */
     public RunConfig withWorker(final Worker replacement) {
         return new RunConfig(runId, store, input, output, policy, modelsDirectory, policyFilesDirectories, plainText,
-                inventory, lease, replacement, sample, releaseGate, quarantine);
+                inputTypes, inventory, lease, replacement, sample, releaseGate, quarantine);
     }
 
     /** This configuration with the store and output location replaced. */
     public RunConfig withLocation(final Store newStore, final Output newOutput) {
         return new RunConfig(runId, newStore, input, newOutput, policy, modelsDirectory, policyFilesDirectories,
-                plainText, inventory, lease, worker, sample, releaseGate, quarantine);
+                plainText, inputTypes, inventory, lease, worker, sample, releaseGate, quarantine);
     }
 
     /**
@@ -172,6 +186,41 @@ public record RunConfig(
 
         public Charset charsetValue() {
             return Charset.forName(charset);
+        }
+    }
+
+    /**
+     * The input types a run redacts, beyond plain text. See {@code docs/configuration.md}.
+     * @param handled The types redacted, by name ({@code text}, {@code csv}, {@code pdf}, {@code docx}, {@code xlsx},
+     *                {@code rtf}, {@code email}). Plain text only by default.
+     * @param extensions Extensions per type other than {@code text}, replacing that type's defaults. Plain text's
+     *                   are {@code plain_text.extensions}.
+     * @param maxDocumentBytes Files of a type other than plain text larger than this are skipped. They are read
+     *                         whole, unlike plain text, which is split into segments.
+     */
+    public record InputTypes(List<String> handled, Map<String, List<String>> extensions, Long maxDocumentBytes) {
+        public InputTypes {
+            handled = handled == null ? List.of(DocumentType.TEXT.json())
+                    : handled.stream().map(t -> t.toLowerCase(Locale.ROOT)).toList();
+            final Map<String, List<String>> normalized = new TreeMap<>();
+            if (extensions != null) {
+                extensions.forEach((type, list) -> normalized.put(type.toLowerCase(Locale.ROOT), list == null
+                        ? List.of() : list.stream().map(e -> e.toLowerCase(Locale.ROOT).replaceFirst("^\\.", "")).toList()));
+            }
+            extensions = Collections.unmodifiableMap(normalized);
+            maxDocumentBytes = maxDocumentBytes == null ? 256L * 1024 * 1024 : maxDocumentBytes;
+        }
+
+        /** The handled types, in a fixed order. Names that are not types are left out; validation refuses them. */
+        public Set<DocumentType> types() {
+            final Set<DocumentType> types = EnumSet.noneOf(DocumentType.class);
+            handled.forEach(name -> DocumentType.of(name).ifPresent(types::add));
+            return types;
+        }
+
+        /** Whether any handled type is not plain text. */
+        public boolean beyondPlainText() {
+            return types().stream().anyMatch(t -> t != DocumentType.TEXT);
         }
     }
 

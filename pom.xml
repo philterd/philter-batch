@@ -80,6 +80,22 @@
             <artifactId>phileas</artifactId>
             <version>${phileas.version}</version>
         </dependency>
+        <!-- The services for Word and Excel, RTF, and email (the phileas artifact brings in plain text, CSV, and PDF). -->
+        <dependency>
+            <groupId>ai.philterd</groupId>
+            <artifactId>phileas-ooxml</artifactId>
+            <version>${phileas.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.philterd</groupId>
+            <artifactId>phileas-rtf</artifactId>
+            <version>${phileas.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.philterd</groupId>
+            <artifactId>phileas-email</artifactId>
+            <version>${phileas.version}</version>
+        </dependency>
         <!-- Runs a ph-eye policy's modelPath in-process through ONNX Runtime. -->
         <dependency>
             <groupId>ai.philterd</groupId>

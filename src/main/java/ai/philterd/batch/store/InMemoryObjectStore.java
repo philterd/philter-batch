@@ -25,7 +25,7 @@ import java.util.function.BiPredicate;
  */
 public final class InMemoryObjectStore implements ObjectStore {
 
-    private record Entry(byte[] data, String etag) {
+    private record Entry(byte[] data, String etag, String contentType) {
     }
 
     private final Map<String, Entry> objects = new TreeMap<>();
@@ -40,6 +40,12 @@ public final class InMemoryObjectStore implements ObjectStore {
 
     public InMemoryObjectStore(final Clock clock) {
         this.clock = clock;
+    }
+
+    /** The content type an object was written with, for tests. */
+    public synchronized String contentType(final String bucket, final String key) {
+        final Entry e = objects.get(id(bucket, key));
+        return e == null ? null : e.contentType();
     }
 
     /**
@@ -117,7 +123,7 @@ public final class InMemoryObjectStore implements ObjectStore {
     @Override
     public synchronized PutResult put(final String bucket, final String key, final byte[] data, final String contentType) {
         checkFault("put", bucket, key);
-        final Entry e = new Entry(data.clone(), etag(data));
+        final Entry e = new Entry(data.clone(), etag(data), contentType);
         objects.put(id(bucket, key), e);
         return new PutResult(e.etag(), clock.instant());
     }
@@ -129,7 +135,7 @@ public final class InMemoryObjectStore implements ObjectStore {
         if (objects.containsKey(id(bucket, key))) {
             throw new PreconditionFailedException("Object exists");
         }
-        final Entry e = new Entry(data.clone(), etag(data));
+        final Entry e = new Entry(data.clone(), etag(data), contentType);
         objects.put(id(bucket, key), e);
         return new PutResult(e.etag(), clock.instant());
     }
@@ -142,7 +148,7 @@ public final class InMemoryObjectStore implements ObjectStore {
         if (current == null || !current.etag().equals(etag)) {
             throw new PreconditionFailedException("ETag does not match");
         }
-        final Entry e = new Entry(data.clone(), etag(data));
+        final Entry e = new Entry(data.clone(), etag(data), contentType);
         objects.put(id(bucket, key), e);
         return new PutResult(e.etag(), clock.instant());
     }

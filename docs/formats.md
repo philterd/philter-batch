@@ -62,6 +62,9 @@ Only `parts/` and `documents/` are output for the training pipeline or the custo
  "extensions": ["txt", "md", "log"], "policy_sha256": "c2e4..."}
 ```
 
+A run that handles more than plain text also records `types`, each handled type with its extensions, such as
+`"types": {"pdf": ["pdf"], "text": ["txt", "md", "log"]}`. A plain-text-only run has no `types`.
+
 Written once by the inventory. Every worker compares its own configuration with it and refuses to start on a
 difference, so all shards of a run are processed the same way.
 
@@ -93,7 +96,9 @@ file, and check its SHA-256 against `run.json`.
 are the sample's, one entry each. All three are 0 when the sample is turned off.
 
 An extension that is not 1 to 10 letters or digits is counted as `(other)`; a key with none as `(none)`.
-Skip reasons: `UNSUPPORTED_TYPE`, `TOO_LARGE`, `EMPTY_FILE`, `DIRECTORY_MARKER`.
+Skip reasons: `UNSUPPORTED_TYPE` (no handled type has the extension), `TOO_LARGE` (over
+`inventory.max_file_bytes`, or for a type other than plain text over `input_types.max_document_bytes`),
+`EMPTY_FILE`, `DIRECTORY_MARKER`.
 
 The inventory can be run again after a crash: until `inventory.json` exists it rewrites the same shards from
 the same listing (and deletes shard numbers past the new count); afterwards it does nothing.
@@ -157,7 +162,13 @@ A document result:
 
 - `status`: `redacted`, `quarantined`, or `empty` (no text).
 - `reason`, for `quarantined`: `CHANGED_SINCE_INVENTORY`, `INPUT_MISSING`, `UNDECODABLE`, `LINE_TOO_LONG`,
-  `REDACTION_FAILED`, `TIMEOUT`, `LEFTOVER_FOUND`, `ENCODING_FAILED`, `POISON`, or `SEGMENT_QUARANTINED`.
+  `REDACTION_FAILED`, `TIMEOUT`, `LEFTOVER_FOUND`, `ENCODING_FAILED`, `POISON`, or `SEGMENT_QUARANTINED`, and for
+  [input types](configuration.md#input-types) other than plain text, `UNSUPPORTED_CONTENT`, `ENCRYPTED`,
+  `MALFORMED`, or `LIMIT_EXCEEDED`.
+- `type`: the type the entry was redacted as, detected from its content (`csv`, `pdf`, `docx`, `xlsx`, `rtf`, or
+  `email`). Absent for plain text and for an entry quarantined before its type was known. `type_mismatch`: `true`
+  when the content's type is not the one its extension names. `sections_without_text`: sections (such as pages)
+  Phileas found no text in, which were not redacted; absent when there were none.
 - `pii_counts`: values replaced, by Phileas filter type. `leftover_counts`: what Phileas's leftover check still
   found, by filter type, when that quarantined the entry. Neither ever holds a value.
 - `leftover_checked`: whether the leftover check ran on the entry. The report counts these as `leftover_checked`. The check is not run for now (see [configuration](configuration.md#leftover-check)), so it is `false`.
@@ -195,7 +206,9 @@ it.
 
 The run's counts, written by finalize, and repeated as `counts` in `_SUCCESS`: shards, documents, and entries;
 `entries_by_status`, `quarantined_by_reason`, `skipped_by_reason`, and `pii_counts`; records and documents written,
-and documents withheld. `quarantined_percent` is quarantined entries over all entries, `quarantine_max_percent` the
+and documents withheld. A run that handles more than plain text also has `entries_by_type` (redacted entries by
+the type they were redacted as), `type_mismatches`, `sections_without_text`, and
+`entries_with_sections_without_text`. `quarantined_percent` is quarantined entries over all entries, `quarantine_max_percent` the
 run's `quarantine.max_percent`, and `quarantine_limit_exceeded` whether the first is above the second. Reports
 written before the limit existed lack these three.
 
@@ -304,7 +317,10 @@ other's parts.
 **Finalize.** Once every shard has a done marker: deletes parts no done marker names; for each document in
 document mode whose entries were all redacted or empty, copies its staged pieces, in segment order, to
 `documents/<document_id>.<ext>` (server-side where the store allows); deletes `staging/`; writes the manifest,
-`report.json`, and `_SUCCESS`. It can be run again after a crash.
+`report.json`, and `_SUCCESS`. It can be run again after a crash. `<ext>` is the input's extension, except that an
+email is `eml` and a document whose content is another type than its extension names takes that type's extension.
+Each line of `manifest/documents-NNNNNN.jsonl` has the entry's key, status, reason, and document, and its `type`
+and `type_mismatch` as in its result.
 
 ## Exit codes
 

@@ -6,6 +6,7 @@ package ai.philterd.batch.sample;
 import ai.philterd.batch.ExitCodes;
 import ai.philterd.batch.config.RunConfig;
 import ai.philterd.batch.inventory.Inventory;
+import ai.philterd.batch.run.DocumentType;
 import ai.philterd.batch.run.FormatException;
 import ai.philterd.batch.run.Formats;
 import ai.philterd.batch.run.Formats.DocumentResult;
@@ -118,13 +119,17 @@ public final class SampleReporter {
                 String text = texts.get(recordId(entry));
                 String output = null;
                 if (config.output().mode().document() && result.staged() != null) {
-                    final byte[] document = staged(result, entry);
+                    final DocumentType type = DocumentType.of(result.type()).orElse(DocumentType.TEXT);
+                    final byte[] document = staged(result, entry, type);
                     if (document != null) {
                         output = layout.sampleDocument(entry.documentId(), entry.segment(), entry.segments(),
-                                entry.extension());
-                        store.put(layout.bucket(), output, document, "text/plain; charset=" + charset.name());
+                                type.outputExtension(entry.extension(), Boolean.TRUE.equals(result.typeMismatch())));
+                        store.put(layout.bucket(), output, document, type.contentType(charset));
                         output = output.substring(layout.root().length());
-                        text = text != null ? text : new String(document, charset);
+                        // Only plain text and CSV can be shown as they are; other documents are linked.
+                        if (text == null && type.textual()) {
+                            text = new String(document, charset);
+                        }
                     }
                 }
                 sampled.add(new Sampled(entry, result, text, output));
@@ -161,13 +166,14 @@ public final class SampleReporter {
     }
 
     /** A sampled entry's redacted document: staged, or already put in place if finalize has run. */
-    private byte[] staged(final DocumentResult result, final ShardEntry entry) {
+    private byte[] staged(final DocumentResult result, final ShardEntry entry, final DocumentType type) {
         final Optional<StoredObject> staged = store.get(layout.bucket(), result.staged());
         if (staged.isPresent()) {
             return staged.get().data();
         }
         if (entry.whole()) {
-            return store.get(layout.bucket(), layout.document(entry.documentId(), entry.extension()))
+            return store.get(layout.bucket(), layout.document(entry.documentId(),
+                    type.outputExtension(entry.extension(), Boolean.TRUE.equals(result.typeMismatch()))))
                     .map(StoredObject::data).orElse(null);
         }
         return null;

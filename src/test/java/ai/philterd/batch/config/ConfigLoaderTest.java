@@ -119,6 +119,39 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void inputTypesDefaultsAndChecks() {
+        final RunConfig c = ConfigLoader.parse(MINIMAL);
+        assertEquals(java.util.Set.of(ai.philterd.batch.run.DocumentType.TEXT), c.inputTypes().types());
+        assertFalse(c.inputTypes().beyondPlainText());
+        assertEquals(256L * 1024 * 1024, c.inputTypes().maxDocumentBytes());
+        final RunConfig all = ConfigLoader.parse(MINIMAL + "input_types: {handled: [TEXT, pdf, email], "
+                + "extensions: {pdf: [PDF, .pdfa]}}\n");
+        assertTrue(all.inputTypes().beyondPlainText());
+        assertEquals(List.of("pdf", "pdfa"), all.extensions(ai.philterd.batch.run.DocumentType.PDF));
+        assertEquals(List.of("eml", "msg"), all.extensions(ai.philterd.batch.run.DocumentType.EMAIL));
+        assertEquals(List.of("txt", "md", "log"), all.extensions(ai.philterd.batch.run.DocumentType.TEXT));
+        // A run may leave plain text out.
+        assertFalse(ConfigLoader.parse(MINIMAL + "input_types: {handled: [pdf]}\n").inputTypes().types()
+                .contains(ai.philterd.batch.run.DocumentType.TEXT));
+        for (final String bad : List.of(
+                "input_types: {handled: []}",
+                "input_types: {handled: [pptx]}",
+                "input_types: {extensions: {pptx: [pptx]}}",
+                "input_types: {extensions: {text: [txt]}}",
+                "input_types: {extensions: {pdf: []}}",
+                "input_types: {extensions: {pdf: [\"p d f\"]}}",
+                "input_types: {handled: [text, csv], extensions: {csv: [txt]}}",
+                "input_types: {max_document_bytes: 0}",
+                "input_types: {max_document_bytes: 4294967296}",
+                "input_types: {handled: [text, pdf]}\noutput: {bucket: out-bucket, mode: both}")) {
+            assertThrows(ConfigException.class, () -> ConfigLoader.parse(MINIMAL + bad + "\n"), bad);
+        }
+        // An extension listed for a type that is not handled does not conflict.
+        ConfigLoader.parse(MINIMAL + "input_types: {extensions: {csv: [txt]}}\n");
+        ConfigLoader.parse(MINIMAL + "output: {bucket: out-bucket, mode: both}\n");
+    }
+
+    @Test
     void sampleAndReleaseGateDefaultsAndChecks() {
         final RunConfig c = ConfigLoader.parse(MINIMAL);
         assertTrue(c.sample().enabled());
