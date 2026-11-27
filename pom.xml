@@ -21,6 +21,12 @@
         <developerConnection>scm:git:git@github.com:philterd/philter-batch.git</developerConnection>
         <url>https://github.com/philterd/philter-batch</url>
     </scm>
+    <licenses>
+        <license>
+            <name>Apache License, version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
 
     <properties>
         <maven.compiler.release>25</maven.compiler.release>

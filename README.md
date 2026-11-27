@@ -120,3 +120,9 @@ Under `<output.prefix>runs/<run_id>/`:
 
 The run's coordination objects (shards, claims, progress, done markers) are specified in
 [docs/formats.md](docs/formats.md).
+
+## License
+
+Copyright 2026 Philterd, LLC.
+
+This project is licensed under the Apache License 2.0.
