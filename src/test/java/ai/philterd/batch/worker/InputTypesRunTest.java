@@ -70,6 +70,9 @@ class InputTypesRunTest {
         put("in/e.eml", Documents.eml());
         put("in/f.csv", Documents.csv());
         put("in/g.txt", (Documents.LINE + "\n").getBytes(StandardCharsets.UTF_8));
+        put("in/h.msg", Documents.msg(null));
+        // OLE2, as legacy and encrypted Office files are, under a Word extension.
+        put("in/legacy.docx", Documents.msg(null));
         // Content that is not what its extension says.
         put("in/report.txt", Documents.pdf());
         put("in/fake.pdf", "Not a PDF at all.".getBytes(StandardCharsets.UTF_8));
@@ -103,29 +106,6 @@ class InputTypesRunTest {
         return entries;
     }
 
-    /**
-     * A document's bytes as searchable text: a Word or Excel file's unzipped parts, a PDF's extracted text, or the
-     * bytes themselves.
-     */
-    private static String readable(final byte[] data) throws Exception {
-        if (data.length > 1 && data[0] == 'P' && data[1] == 'K') {
-            final StringBuilder out = new StringBuilder();
-            try (java.util.zip.ZipInputStream zip = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(data))) {
-                for (var e = zip.getNextEntry(); e != null; e = zip.getNextEntry()) {
-                    out.append(new String(zip.readAllBytes(), StandardCharsets.UTF_8));
-                }
-            }
-            assertTrue(out.length() > 0);
-            return out.toString();
-        }
-        if (new String(data, 0, Math.min(5, data.length), StandardCharsets.ISO_8859_1).equals("%PDF-")) {
-            try (var pdf = org.apache.pdfbox.Loader.loadPDF(data)) {
-                return new org.apache.pdfbox.text.PDFTextStripper().getText(pdf);
-            }
-        }
-        return new String(data, StandardCharsets.ISO_8859_1);
-    }
-
     private Report report(final RunLayout layout) {
         return Json.read(store.get(layout.bucket(), layout.report()).orElseThrow().data(), Report.class);
     }
@@ -153,12 +133,15 @@ class InputTypesRunTest {
                 r -> manifest.values().stream().filter(m -> m.documentId().equals(r.documentId())).findFirst()
                         .orElseThrow().key(), r -> r));
 
-        assertEquals(8, records.size());
+        assertEquals(9, records.size());
         assertEquals("pdf", byKey.get("in/a.pdf").type());
         assertEquals("docx", byKey.get("in/b.docx").type());
         assertEquals("xlsx", byKey.get("in/c.xlsx").type());
         assertEquals("rtf", byKey.get("in/d.rtf").type());
         assertEquals("email", byKey.get("in/e.eml").type());
+        assertEquals("email", byKey.get("in/h.msg").type());
+        assertTrue(byKey.get("in/h.msg").sections().stream().map(Section::label).toList().contains("body"));
+        assertEquals(ReasonCode.UNSUPPORTED_CONTENT.name(), manifest.get("in/legacy.docx").reason());
         assertEquals("csv", byKey.get("in/f.csv").type());
         assertEquals("text", byKey.get("in/g.txt").type());
         assertNull(byKey.get("in/g.txt").sections(), "plain text has no sections");
@@ -188,12 +171,12 @@ class InputTypesRunTest {
         assertTrue(skipped.contains("in/big.pdf") && skipped.contains("TOO_LARGE"), skipped);
 
         final Report report = report(layout);
-        assertEquals(Map.of("csv", 1L, "docx", 1L, "email", 1L, "pdf", 2L, "rtf", 1L, "text", 1L, "xlsx", 1L),
+        assertEquals(Map.of("csv", 1L, "docx", 1L, "email", 2L, "pdf", 2L, "rtf", 1L, "text", 1L, "xlsx", 1L),
                 report.entriesByType());
         assertEquals(1L, report.typeMismatches());
         assertEquals(2L, report.sectionsWithoutText());
         assertEquals(2L, report.entriesWithSectionsWithoutText());
-        assertEquals(Map.of("MALFORMED", 1L, "UNSUPPORTED_CONTENT", 1L), report.quarantinedByReason());
+        assertEquals(Map.of("MALFORMED", 1L, "UNSUPPORTED_CONTENT", 2L), report.quarantinedByReason());
     }
 
     @Test
@@ -206,17 +189,19 @@ class InputTypesRunTest {
         final Map<String, ManifestEntry> manifest = manifestByKey(layout);
         final Map<String, String> expected = Map.of(
                 "in/a.pdf", ".pdf", "in/b.docx", ".docx", "in/c.xlsx", ".xlsx", "in/d.rtf", ".rtf",
-                "in/e.eml", ".eml", "in/f.csv", ".csv", "in/g.txt", ".txt", "in/report.txt", ".pdf");
+                "in/e.eml", ".eml", "in/f.csv", ".csv", "in/g.txt", ".txt", "in/report.txt", ".pdf",
+                "in/h.msg", ".eml");
         for (final Map.Entry<String, String> e : expected.entrySet()) {
             final String document = manifest.get(e.getKey()).document();
             assertTrue(document != null && document.endsWith(e.getValue()), e.getKey() + " -> " + document);
             final StoredObject stored = store.get(layout.bucket(), document).orElseThrow();
-            assertFalse(readable(stored.data()).contains(Documents.EMAIL), document);
+            assertFalse(Documents.readable(stored.data()).contains(Documents.EMAIL), document);
         }
         assertEquals("application/pdf", store.contentType(layout.bucket(), manifest.get("in/a.pdf").document()));
         assertEquals("text/csv", store.contentType(layout.bucket(), manifest.get("in/f.csv").document()));
         assertEquals("text/plain; charset=UTF-8", store.contentType(layout.bucket(), manifest.get("in/g.txt").document()));
         assertEquals("message/rfc822", store.contentType(layout.bucket(), manifest.get("in/e.eml").document()));
+        assertEquals("message/rfc822", store.contentType(layout.bucket(), manifest.get("in/h.msg").document()));
         assertNull(manifest.get("in/fake.pdf").document());
         assertTrue(store.list(layout.bucket(), layout.partsPrefix()).isEmpty(), "document mode writes no records");
         assertTrue(store.list(layout.bucket(), layout.stagingPrefix()).isEmpty());

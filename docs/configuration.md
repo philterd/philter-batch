@@ -91,6 +91,11 @@ images, so their text cannot be read back. A redacted CSV is written in the poli
 has no charset. A
 CSV's delimiter, quote, and encoding come from the policy's `config.csv`, not from `plain_text.charset`.
 
+> **Warning:** Phileas's email setting `config.email.attachments` defaults to `keep`, which leaves attachments
+> unread: in `text` output they are left out, and in `document` output they are copied into the redacted message
+> unredacted. Set it to `redact` in the policy to redact PDF, Word, Excel, RTF, CSV, and plain-text attachments
+> (and remove any other), or to `remove`. `config.email.inlineImages` likewise defaults to `keep`.
+
 A section Phileas finds no text in, such as a scanned page, is `no_text`: it is empty and not redacted. In `text`
 output such sections are counted in the report (`sections_without_text`); in `document` output Phileas does not
 report them, so they are not counted. OCR is not supported.

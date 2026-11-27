@@ -50,6 +50,7 @@ class PhileasDocumentRedactorTest {
                 Arguments.of(DocumentType.XLSX, Documents.xlsx()),
                 Arguments.of(DocumentType.RTF, Documents.rtf()),
                 Arguments.of(DocumentType.EMAIL, Documents.eml()),
+                Arguments.of(DocumentType.EMAIL, Documents.msg(null)),
                 Arguments.of(DocumentType.CSV, Documents.csv()));
     }
 
@@ -144,6 +145,53 @@ class PhileasDocumentRedactorTest {
                 Documents.encryptedPdf(), true));
         assertEquals(ReasonCode.ENCRYPTED, ReasonCode.forFailure(pdf), pdf.getClass().getName());
         assertEquals(ReasonCode.REDACTION_FAILED, ReasonCode.forFailure(new IllegalStateException()));
+    }
+
+    @Test
+    void anOutlookMessagesAttachmentIsRedactedWhenThePolicySays() throws Exception {
+        final PhileasRedactor withAttachments = new PhileasRedactor(LoadedPolicy.load(Fixtures.REGEX_POLICY
+                .replace("{\"name\":\"test\",", "{\"name\":\"test\",\"config\":{\"email\":{\"attachments\":\"redact\"}},")
+                .getBytes(StandardCharsets.UTF_8), Path.of("/nonexistent")), CONFIGURATION);
+        final byte[] msg = Documents.msg(Documents.pdf());
+        assertEquals(DocumentType.EMAIL, DocumentTypes.detect(msg, DocumentType.EMAIL).orElseThrow());
+        final TextRedactor.DocumentRedaction text = withAttachments.redactDocument(DocumentType.EMAIL, msg, true);
+        final TextRedactor.Section page = text.sections().stream()
+                .filter(x -> x.label().startsWith("attachment: ") && x.label().endsWith(" / page 1")).findFirst()
+                .orElseThrow(() -> new AssertionError(text.sections().stream().map(TextRedactor.Section::label).toList()));
+        assertTrue(page.text().contains(REDACTED), page.text());
+        assertFalse(page.text().contains(Documents.EMAIL), page.text());
+        final byte[] document = withAttachments.redactDocument(DocumentType.EMAIL, msg, false).document();
+        assertFalse(attachmentText(document).contains(Documents.EMAIL));
+    }
+
+    @Test
+    void anOutlookMessagesAttachmentIsKeptUnreadByDefault() throws Exception {
+        // Phileas's default, config.email.attachments: keep. The attachment is not in the text, and it is copied
+        // into the redacted message as it was.
+        final byte[] msg = Documents.msg(Documents.pdf());
+        final TextRedactor.DocumentRedaction text = redactor.redactDocument(DocumentType.EMAIL, msg, true);
+        assertTrue(text.sections().stream().noneMatch(x -> x.label().startsWith("attachment")),
+                text.sections().stream().map(TextRedactor.Section::label).toList().toString());
+        final byte[] document = redactor.redactDocument(DocumentType.EMAIL, msg, false).document();
+        assertTrue(attachmentText(document).contains(Documents.EMAIL), "the kept attachment is unredacted");
+    }
+
+    /** The text of a MIME message's PDF attachments. */
+    private static String attachmentText(final byte[] message) throws Exception {
+        final jakarta.mail.internet.MimeMessage parsed = new jakarta.mail.internet.MimeMessage(
+                jakarta.mail.Session.getInstance(new java.util.Properties()), new ByteArrayInputStream(message));
+        final StringBuilder out = new StringBuilder();
+        if (parsed.getContent() instanceof jakarta.mail.Multipart multipart) {
+            for (int i = 0; i < multipart.getCount(); i++) {
+                final jakarta.mail.BodyPart part = multipart.getBodyPart(i);
+                if (part.isMimeType("application/pdf")) {
+                    try (PDDocument pdf = Loader.loadPDF(part.getInputStream().readAllBytes())) {
+                        out.append(new org.apache.pdfbox.text.PDFTextStripper().getText(pdf));
+                    }
+                }
+            }
+        }
+        return out.toString();
     }
 
     @Test
