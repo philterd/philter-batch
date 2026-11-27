@@ -183,6 +183,10 @@ CI="kubectl exec -i -n philter-batch philter-batch-console-0 --"
    $C philter-batch approve pilot-2026-11 release --by "Avery Example"
    ```
 
+   When more entries were quarantined than `quarantine.max_percent` (5% by default), `status` says so and the
+   approval is refused. Review `quarantined_by_reason` in `report.json`, and the quarantined entries in
+   `manifest/`, then reject, or approve with `--accept-quarantine`, which the decision records.
+
    `status` shows `finished`. Whether the release gate stays, now that the sample gate exists, is an open decision;
    it is on by default and is turned off with `release_gate.enabled: false` in the run's configuration.
 
@@ -195,12 +199,13 @@ CI="kubectl exec -i -n philter-batch philter-batch-console-0 --"
 | `sample` | Redacts the sample and writes `sample/`, in one pod shaped like a worker. Does nothing for a run without a sample or once its report exists. | pod error, exit 3, 137, or 143 |
 | `sample-gate` | Waits for `gates/sample-approved.json` or `-rejected.json`. Approved at once for a run without a sample. | pod error, exit 3, 137, or 143 |
 | `workers` | Only when the sample is approved: `workers.count` pods (Argo `parallelism`), each running `work` until no shard is left. | pod error, exit 3, 4, 137, or 143, with backoff |
-| `finalize` | Cleans up and writes the manifest, report, and `_SUCCESS`. | pod error, exit 137 or 143 |
+| `finalize` | Cleans up and writes the manifest, report, and `_SUCCESS`. Exits 6 when the quarantines are above `quarantine.max_percent` and `release_gate.enabled` is false. | pod error, exit 137 or 143 |
 | `release-gate` | Waits for `gates/release-approved.json` or `-rejected.json`. Approved at once when `release_gate.enabled` is false. | pod error, exit 3, 137, or 143 |
 | `sample-rejected`, `release-rejected` | On a rejection, log it. | |
 | `exit-handler` | Logs the run's status and failed steps. Touches neither input nor output. | |
 
-Exit 1 (error) and 2 (usage) are never retried, nor is finalize's 5 (a shard has no done marker). A worker
+Exit 1 (error) and 2 (usage) are never retried, nor are finalize's 5 (a shard has no done marker) and 6 (the
+quarantine limit, with no release gate). A worker
 exiting 4 (the remaining shards are claimed by other pods) is retried with backoff (30 s, doubling, capped at
 5 minutes, up to `workers.retry.limit` times) so that it takes over the claim of a pod that died once the
 claim's lease expires. Exit codes are listed in [formats](formats.md#exit-codes).
@@ -212,8 +217,10 @@ the cleanup step.
 
 ## Watch and resume
 
-`status` reads the run's objects and its workflows: the stage, whether it waits on a person, shards done, and each
-gate's decision. `--json` prints the same for scripts. Progress is done markers over shards. A worker step that
+`status` reads the run's objects and its workflows: the stage, whether it waits on a person, shards done, the
+entries quarantined so far by reason against `quarantine.max_percent`, and each gate's decision. `--json` prints
+the same for scripts. Before finalize, the quarantine counts are those of the completed shards, from `counts/`;
+after it, the run's, from `report.json`. Progress is done markers over shards. A worker step that
 failed with exit 4 and was retried is expected.
 
 If the workflow fails or is deleted, fix the cause (with `helm upgrade` if it is a value) and submit again:

@@ -111,7 +111,8 @@ Under `<output.prefix>runs/<run_id>/`:
 
 - `parts/*.jsonl`: redacted text, one record per file or segment ([record schema](docs/record-schema.md)).
 - `documents/`: redacted files, named by opaque ID (document and both modes).
-- `report.json` and `_SUCCESS`: counts by status, reason, and PII type; the policy hash; the Phileas versions and
+- `report.json` and `_SUCCESS`: counts by status, reason, and PII type; the quarantined percentage against
+  `quarantine.max_percent`; the policy hash; the Phileas versions and
   the SHA-256 of each model; and the image digest when `PHILTER_BATCH_IMAGE_DIGEST` is set.
 - `manifest/`: the mapping from opaque IDs to input keys, and every skipped object. It holds file names, which
   can contain names: do not give it to the training pipeline.

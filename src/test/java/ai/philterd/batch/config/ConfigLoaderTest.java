@@ -104,6 +104,21 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void quarantineLimitDefaultsAndChecks() {
+        assertEquals(5.0, ConfigLoader.parse(MINIMAL).quarantine().maxPercent());
+        assertEquals(2.5, ConfigLoader.parse(MINIMAL + "quarantine: {max_percent: 2.5}\n").quarantine().maxPercent());
+        assertEquals(0.0, ConfigLoader.parse(MINIMAL + "quarantine: {max_percent: 0}\n").quarantine().maxPercent());
+        assertThrows(ConfigException.class, () -> ConfigLoader.parse(MINIMAL + "quarantine: {max_percent: -1}\n"));
+        assertThrows(ConfigException.class, () -> ConfigLoader.parse(MINIMAL + "quarantine: {max_percent: 100.5}\n"));
+        final RunConfig.Quarantine limit = new RunConfig.Quarantine(5.0);
+        assertFalse(limit.exceeded(5, 100), "at the limit is not above it");
+        assertTrue(limit.exceeded(6, 100));
+        assertFalse(limit.exceeded(0, 0), "no entries, nothing exceeded");
+        assertFalse(new RunConfig.Quarantine(0.0).exceeded(0, 10));
+        assertTrue(new RunConfig.Quarantine(0.0).exceeded(1, 10));
+    }
+
+    @Test
     void sampleAndReleaseGateDefaultsAndChecks() {
         final RunConfig c = ConfigLoader.parse(MINIMAL);
         assertTrue(c.sample().enabled());

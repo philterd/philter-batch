@@ -59,3 +59,8 @@ sample:
 
 release_gate:
   enabled: true
+
+# Quarantined entries (files, or segments of large files) as a percentage of all entries. Above it, the release
+# gate refuses a plain approval (approve --accept-quarantine), and without a release gate finalize exits 6.
+quarantine:
+  max_percent: 5

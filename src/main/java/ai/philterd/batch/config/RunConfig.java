@@ -26,7 +26,8 @@ public record RunConfig(
         Lease lease,
         Worker worker,
         Sample sample,
-        ReleaseGate releaseGate) {
+        ReleaseGate releaseGate,
+        Quarantine quarantine) {
 
     public RunConfig {
         store = store == null ? new Store(null, null, null, null) : store;
@@ -39,18 +40,19 @@ public record RunConfig(
         worker = worker == null ? new Worker(null, null, null, null, null, null) : worker;
         sample = sample == null ? new Sample(null, null, null, null, null, null) : sample;
         releaseGate = releaseGate == null ? new ReleaseGate(null) : releaseGate;
+        quarantine = quarantine == null ? new Quarantine(null) : quarantine;
     }
 
     /** This configuration with the worker's settings replaced, for the per-pod settings a deployment sets. */
     public RunConfig withWorker(final Worker replacement) {
         return new RunConfig(runId, store, input, output, policy, modelsDirectory, policyFilesDirectories, plainText,
-                inventory, lease, replacement, sample, releaseGate);
+                inventory, lease, replacement, sample, releaseGate, quarantine);
     }
 
     /** This configuration with the store and output location replaced. */
     public RunConfig withLocation(final Store newStore, final Output newOutput) {
         return new RunConfig(runId, newStore, input, newOutput, policy, modelsDirectory, policyFilesDirectories,
-                plainText, inventory, lease, worker, sample, releaseGate);
+                plainText, inventory, lease, worker, sample, releaseGate, quarantine);
     }
 
     /**
@@ -79,6 +81,26 @@ public record RunConfig(
     public record ReleaseGate(Boolean enabled) {
         public ReleaseGate {
             enabled = enabled == null || enabled;
+        }
+    }
+
+    /**
+     * The quarantine limit: when more of a run's entries than this are quarantined, the release gate refuses a plain
+     * approval, and without a release gate the run ends with exit code 6.
+     * @param maxPercent Quarantined entries as a percentage of all entries, from 0 to 100. 5 by default.
+     */
+    public record Quarantine(Double maxPercent) {
+        public Quarantine {
+            maxPercent = maxPercent == null ? 5.0 : maxPercent;
+        }
+
+        /** Whether {@code quarantined} of {@code entries} is above the limit. */
+        public boolean exceeded(final long quarantined, final long entries) {
+            return entries > 0 && percent(quarantined, entries) > maxPercent;
+        }
+
+        public static double percent(final long quarantined, final long entries) {
+            return entries == 0 ? 0 : 100.0 * quarantined / entries;
         }
     }
 

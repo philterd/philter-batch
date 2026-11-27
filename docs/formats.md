@@ -31,6 +31,7 @@ shards/NNNNNN.json                             one shard each, written once
 claims/NNNNNN                                  who holds a shard, until when
 progress/NNNNNN                                a shard's cursor and committed results
 done/NNNNNN.json                               created once when a shard is complete
+counts/NNNNNN.json                             a completed shard's counts, for status
 parts/part-NNNNNN-<worker>-NNNNN.jsonl         redacted text records (output)
 staging/<document_id>[-sNNNNN]-<worker>.<ext>  redacted documents before finalize
 documents/<document_id>.<ext>                  redacted documents (output)
@@ -178,6 +179,26 @@ A document result:
 Created if absent, from the final progress. Finalize refuses a run whose done markers disagree on the policy,
 the Phileas versions, or the models.
 
+## counts/NNNNNN.json
+
+```json
+{"format": 1, "run_id": "pilot-2026-11", "shard": "000012", "entries": 9950,
+ "entries_by_status": {"redacted": 9941, "quarantined": 9}, "quarantined_by_reason": {"UNDECODABLE": 9}}
+```
+
+Written by the worker that created the shard's done marker, after creating it, so that `status` can count
+quarantines during a run by reading one small object per completed shard. It holds counts only. A shard whose done
+marker exists without one (the worker stopped in between) is counted from its done marker. Finalize does not read
+it.
+
+## report.json
+
+The run's counts, written by finalize, and repeated as `counts` in `_SUCCESS`: shards, documents, and entries;
+`entries_by_status`, `quarantined_by_reason`, `skipped_by_reason`, and `pii_counts`; records and documents written,
+and documents withheld. `quarantined_percent` is quarantined entries over all entries, `quarantine_max_percent` the
+run's `quarantine.max_percent`, and `quarantine_limit_exceeded` whether the first is above the second. Reports
+written before the limit existed lack these three.
+
 ## The sample and the gates
 
 **Choosing the sample.** The inventory groups the entries by extension and by size band (each band 16 times the
@@ -237,6 +258,8 @@ any tool that can write to the bucket. `approve` and `reject` write it if absent
 - A rejection wins when both exist.
 - `approve sample` needs `sample/report.json`; `approve release` needs `_SUCCESS`. A rejection needs neither.
 - `sample_report_sha256` is the SHA-256 of the `report.html` that was reviewed (sample gate only).
+- `approve release` refuses a run whose `report.json` is above `quarantine.max_percent` unless given
+  `--accept-quarantine`, and then records `"quarantine_accepted": true`. A marker written by hand skips this check.
 - `work` refuses to start while the run has a sample that is not approved.
 
 ## The protocol
@@ -293,3 +316,4 @@ document mode whose entries were all redacted or empty, copies its staged pieces
 | 3 | Stopped by SIGTERM or SIGINT, with progress saved. Work remains. |
 | 4 | `work`: work remains, but every remaining shard is claimed by another worker. |
 | 5 | `finalize`: not every shard has a done marker yet. `sample`: not every sample shard has one. |
+| 6 | `finalize` and `run`: finalized, but the quarantined entries are above `quarantine.max_percent`, and no release gate holds the output for a person (`run` never waits at it; `finalize` when `release_gate.enabled` is false). Again on every rerun. |

@@ -10,9 +10,15 @@ import ai.philterd.batch.config.RunConfig;
 import ai.philterd.batch.gate.Gates;
 import ai.philterd.batch.gate.Gates.Decision;
 import ai.philterd.batch.gate.Gates.Gate;
+import ai.philterd.batch.run.FormatException;
+import ai.philterd.batch.run.Formats;
+import ai.philterd.batch.run.Formats.DocumentResult;
+import ai.philterd.batch.run.Formats.DoneMarker;
 import ai.philterd.batch.run.Formats.GateDecision;
 import ai.philterd.batch.run.Formats.InventorySummary;
+import ai.philterd.batch.run.Formats.Report;
 import ai.philterd.batch.run.Formats.SampleReport;
+import ai.philterd.batch.run.Formats.ShardCounts;
 import ai.philterd.batch.run.Hashes;
 import ai.philterd.batch.run.Json;
 import ai.philterd.batch.run.RunLayout;
@@ -21,10 +27,17 @@ import ai.philterd.batch.store.ObjectStore;
 import ai.philterd.batch.store.StoredObject;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
  * Where a run is, read from its objects in the bucket and from its Argo workflows, and whether it waits on a person.
@@ -36,7 +49,22 @@ public record RunStatus(String runId, Stage stage, boolean waitingOnPerson, Stri
                         String policySha256, Workflows.Info workflow, InventorySummary inventory, int shards,
                         int shardsDone, int sampleShardsDone, boolean sampleReport, Gate gateWaiting,
                         GateDecision sampleDecision, String sampleGate, boolean finalized, String releaseGate,
-                        GateDecision releaseDecision) {
+                        GateDecision releaseDecision, Quarantine quarantine) {
+
+    /**
+     * Quarantined entries so far: from {@code report.json} once the run is finalized, and before that from the
+     * completed shards.
+     * @param entries Entries in the counted shards (all of the run's entries once finalized).
+     * @param quarantined Of those, the quarantined ones.
+     * @param byReason Quarantined entries by reason code.
+     * @param percent {@code quarantined} as a percentage of {@code entries}.
+     * @param maxPercent The run's {@code quarantine.max_percent}.
+     * @param exceeded Whether {@code percent} is above {@code maxPercent}: so far, before the run is finalized.
+     * @param complete Whether the counts are the finalized run's, rather than its completed shards' so far.
+     */
+    public record Quarantine(long entries, long quarantined, Map<String, Long> byReason, double percent,
+                             double maxPercent, boolean exceeded, boolean complete) {
+    }
 
     /** Where a run is. */
     public enum Stage {
@@ -146,7 +174,8 @@ public record RunStatus(String runId, Stage stage, boolean waitingOnPerson, Stri
         } else if (releaseActive && release.isEmpty()) {
             stage = Stage.RELEASE_WAITING;
             next = "review report.json and the output; then philter-batch approve " + runId
-                    + " release --by \"<name>\", or reject";
+                    + " release --by \"<name>\"" + (gates.quarantineLimitExceeded() ? " --accept-quarantine" : "")
+                    + ", or reject";
         } else {
             stage = Stage.FINISHED;
             next = null;
@@ -160,13 +189,72 @@ public record RunStatus(String runId, Stage stage, boolean waitingOnPerson, Stri
                 sampleActive ? gates.record(Gate.SAMPLE).orElse(null) : null,
                 !sampleActive ? "none" : sample.map(Decision::id).orElse(report ? "waiting" : "not reached"), finalized,
                 !releaseActive ? "none" : release.map(Decision::id).orElse(finalized ? "waiting" : "not reached"),
-                releaseActive ? gates.record(Gate.RELEASE).orElse(null) : null);
+                releaseActive ? gates.record(Gate.RELEASE).orElse(null) : null,
+                quarantine(store, layout, config, gates, finalized, done));
+    }
+
+    /** Counts quarantines: from the report once finalized, otherwise from the completed shards. */
+    private static Quarantine quarantine(final ObjectStore store, final RunLayout layout, final RunConfig config,
+                                         final Gates gates, final boolean finalized, final Set<String> done) {
+        final RunConfig.Quarantine limit = config.quarantine();
+        final Optional<Report> report = finalized ? gates.report() : Optional.empty();
+        if (report.isPresent()) {
+            final Report r = report.get();
+            final long quarantined = r.entriesByStatus().getOrDefault(DocumentResult.QUARANTINED, 0L);
+            return new Quarantine(r.entries(), quarantined, r.quarantinedByReason(),
+                    RunConfig.Quarantine.percent(quarantined, r.entries()), limit.maxPercent(),
+                    limit.exceeded(quarantined, r.entries()), true);
+        }
+        final Set<String> counted = ids(store, layout.bucket(), layout.countsPrefix());
+        final List<String> shards = new ArrayList<>(done);
+        final List<ShardCounts> counts = new ArrayList<>();
+        // One small object per completed shard, read in parallel; a shard without one is counted from its done marker.
+        try (ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, Math.min(16, shards.size())))) {
+            final List<Future<ShardCounts>> reads = new ArrayList<>();
+            for (final String id : shards) {
+                reads.add(pool.submit(() -> counted.contains(id)
+                        ? store.get(layout.bucket(), layout.counts(id)).map(o -> readCounts(o.data(), id))
+                                .orElseGet(() -> fromDone(store, layout, config, id))
+                        : fromDone(store, layout, config, id)));
+            }
+            for (final Future<ShardCounts> f : reads) {
+                counts.add(f.get());
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while counting quarantines.", e);
+        } catch (final ExecutionException e) {
+            throw e.getCause() instanceof RuntimeException r ? r : new IllegalStateException(e.getCause());
+        }
+        long entries = 0;
+        long quarantined = 0;
+        final Map<String, Long> byReason = new TreeMap<>();
+        for (final ShardCounts c : counts) {
+            entries += c.entries();
+            quarantined += c.entriesByStatus().getOrDefault(DocumentResult.QUARANTINED, 0L);
+            c.quarantinedByReason().forEach((reason, n) -> byReason.merge(reason, n, Long::sum));
+        }
+        return new Quarantine(entries, quarantined, byReason, RunConfig.Quarantine.percent(quarantined, entries),
+                limit.maxPercent(), limit.exceeded(quarantined, entries), false);
+    }
+
+    private static ShardCounts readCounts(final byte[] data, final String id) {
+        final ShardCounts counts = Json.read(data, ShardCounts.class);
+        FormatException.check("The counts of shard " + id, counts.format(), Formats.FORMAT);
+        return counts;
+    }
+
+    private static ShardCounts fromDone(final ObjectStore store, final RunLayout layout, final RunConfig config,
+                                        final String id) {
+        final DoneMarker marker = Json.read(store.get(layout.bucket(), layout.done(id)).orElseThrow().data(),
+                DoneMarker.class);
+        return ShardCounts.of(config.runId(), id, marker.results());
     }
 
     private static RunStatus simple(final String runId, final Stage stage, final boolean person, final String next,
                                     final String error, final Workflows.Info workflow) {
         return new RunStatus(runId, stage, person, next, error, null, workflow, null, 0, 0, 0, false, null, null,
-                null, false, null, null);
+                null, false, null, null, null);
     }
 
     private static Set<String> ids(final ObjectStore store, final String bucket, final String prefix) {

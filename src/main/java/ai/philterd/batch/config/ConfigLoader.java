@@ -211,6 +211,10 @@ public final class ConfigLoader {
         final RunConfig.Sample sample = c.sample();
         positive("sample.size", sample.size());
         positive("sample.report_max_chars", sample.reportMaxChars());
+        final double maxPercent = c.quarantine().maxPercent();
+        if (!(maxPercent >= 0 && maxPercent <= 100)) {
+            throw new ConfigException("quarantine.max_percent must be from 0 to 100.");
+        }
         if (sample.pricePerWorkerHour() != null && !(sample.pricePerWorkerHour() >= 0)) {
             throw new ConfigException("sample.price_per_worker_hour must not be negative.");
         }

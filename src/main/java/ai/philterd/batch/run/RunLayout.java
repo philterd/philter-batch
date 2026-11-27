@@ -92,6 +92,14 @@ public final class RunLayout {
         return donePrefix() + id + ".json";
     }
 
+    public String countsPrefix() {
+        return root + "counts/";
+    }
+
+    public String counts(final String id) {
+        return countsPrefix() + id + ".json";
+    }
+
     public String partsPrefix() {
         return root + "parts/";
     }

@@ -22,6 +22,11 @@ public final class ExitCodes {
     public static final int ALL_LEASED = 4;
     /** Finalize: not every shard has a done marker yet. */
     public static final int INCOMPLETE = 5;
+    /**
+     * Finalize or run: the run is finalized, but its quarantined entries exceed {@code quarantine.max_percent} and no
+     * release gate holds it for a person's decision.
+     */
+    public static final int QUARANTINE_LIMIT = 6;
 
     private ExitCodes() {
     }

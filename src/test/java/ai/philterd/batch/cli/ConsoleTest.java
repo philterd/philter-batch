@@ -10,10 +10,13 @@ import ai.philterd.batch.TestClock;
 import ai.philterd.batch.config.ConfigException;
 import ai.philterd.batch.config.RunConfig;
 import ai.philterd.batch.console.Workflows;
+import ai.philterd.batch.run.Formats.GateDecision;
+import ai.philterd.batch.run.Formats.Report;
 import ai.philterd.batch.run.Formats.Success;
 import ai.philterd.batch.run.Json;
 import ai.philterd.batch.run.RunLayout;
 import ai.philterd.batch.store.InMemoryObjectStore;
+import ai.philterd.batch.store.ObjectInfo;
 import ai.philterd.batch.store.ObjectStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -225,6 +228,73 @@ class ConsoleTest {
         assertEquals(ExitCodes.ERROR, execIn(Fixtures.REGEX_POLICY, "set-policy", RUN, "--stdin"));
     }
 
+    /** Three files that do not decode as UTF-8, quarantined UNDECODABLE: 3 of 15 entries, above the default 5%. */
+    private void undecodable() {
+        for (int i = 0; i < 3; i++) {
+            store.put(Fixtures.INPUT, "in/binary-" + i + ".txt", new byte[] {(byte) 0xC3, (byte) 0x28, 0x41},
+                    "text/plain");
+        }
+    }
+
+    @Test
+    void quarantinesAboveTheLimitHoldTheRelease() throws Exception {
+        undecodable();
+        configured();
+        assertEquals(ExitCodes.OK, exec("submit", RUN));
+        workflowUntilTheSampleGate();
+        assertEquals(ExitCodes.OK, exec("approve", RUN, "sample"));
+        assertEquals(ExitCodes.OK, exec("work", "--run-id", RUN, "--threads", "2"));
+
+        // Before finalize: counted from the completed shards' counts objects.
+        final RunLayout layout = new RunLayout("output-bucket", "out/", RUN);
+        assertEquals(store.list(layout.bucket(), layout.donePrefix()).size(),
+                store.list(layout.bucket(), layout.countsPrefix()).size(), "one counts object per done shard");
+        assertEquals(ExitCodes.OK, exec("status", RUN));
+        assertTrue(output().contains("Quarantined:  3 of 15 entries in completed shards (20.00%; limit 5%), above the "
+                + "limit so far"), output());
+        assertTrue(output().contains("by reason:  UNDECODABLE 3"), output());
+        // A shard whose counts object is missing is counted from its done marker.
+        for (final ObjectInfo o : store.list(layout.bucket(), layout.countsPrefix())) {
+            store.delete(layout.bucket(), o.key());
+        }
+        assertEquals(ExitCodes.OK, exec("status", RUN));
+        assertTrue(output().contains("Quarantined:  3 of 15 entries in completed shards (20.00%"), output());
+
+        // The release gate holds the run: finalize succeeds, a plain approval is refused.
+        assertEquals(ExitCodes.OK, exec("finalize", "--run-id", RUN));
+        final Report report = Json.read(store.get(layout.bucket(), layout.report()).orElseThrow().data(), Report.class);
+        assertEquals(20.0, report.quarantinedPercent(), 1e-9);
+        assertEquals(5.0, report.quarantineMaxPercent());
+        assertTrue(report.quarantineLimitExceeded());
+        assertEquals(ExitCodes.OK, exec("status", RUN));
+        assertTrue(output().contains("Quarantined:  3 of 15 entries (20.00%; limit 5%), ABOVE THE LIMIT"), output());
+        assertTrue(output().contains("release --by \"<name>\" --accept-quarantine, or reject"), output());
+        assertEquals(ExitCodes.ERROR, exec("approve", RUN, "release", "--by", "Test Reviewer"));
+        assertEquals(ExitCodes.OK, exec("approve", RUN, "release", "--by", "Test Reviewer", "--accept-quarantine"));
+        final GateDecision decision = Json.read(store.get(layout.bucket(), layout.gateMarker("release", "approved"))
+                .orElseThrow().data(), GateDecision.class);
+        assertEquals(Boolean.TRUE, decision.quarantineAccepted());
+    }
+
+    @Test
+    void withoutAReleaseGateQuarantinesAboveTheLimitFailFinalize() {
+        undecodable();
+        assertEquals(ExitCodes.OK, execIn(runYaml("release_gate: {enabled: false}\nquarantine: {max_percent: 25}\n"),
+                "configure", "--stdin"));
+        assertEquals(ExitCodes.OK, execIn(Fixtures.REGEX_POLICY, "set-policy", RUN, "--stdin"));
+        workflowUntilTheSampleGate();
+        assertEquals(ExitCodes.OK, exec("approve", RUN, "sample"));
+        assertEquals(ExitCodes.OK, exec("work", "--run-id", RUN, "--threads", "2"));
+        assertEquals(ExitCodes.OK, exec("finalize", "--run-id", RUN), "20% is within a 25% limit");
+
+        // The same run with the default limit (configure refuses a started run, so the stored file is replaced):
+        // finalize ends with exit code 6, and again on a rerun.
+        store.put("output-bucket", new RunLayout("output-bucket", "out/", RUN).storedConfig(),
+                runYaml("release_gate: {enabled: false}\n").getBytes(StandardCharsets.UTF_8), "application/yaml");
+        assertEquals(ExitCodes.QUARANTINE_LIMIT, exec("finalize", "--run-id", RUN));
+        assertEquals(ExitCodes.QUARANTINE_LIMIT, exec("finalize", "--run-id", RUN));
+    }
+
     @Test
     void aRejectedSampleEndsTheRun() {
         configured();
@@ -292,6 +362,29 @@ class ConsoleTest {
         assertEquals(ExitCodes.ERROR, exec("inventory", "--run-id", RUN), "no deployment");
         assertEquals(ExitCodes.USAGE, exec("inventory", "--run-id", RUN, "-c", "run.yaml"), "one or the other");
         assertEquals(ExitCodes.ERROR, exec("sample", "--run-id", RUN, "--worker-pods", "0"));
+    }
+
+    @Test
+    void aLocalRunAboveTheQuarantineLimitExits6() throws Exception {
+        undecodable();
+        final Path policy = dir.resolve("policy.json");
+        Files.writeString(policy, Fixtures.REGEX_POLICY);
+        final Path config = dir.resolve("run.yaml");
+        Files.writeString(config, """
+                run_id: local-run
+                input: {bucket: input-bucket, prefix: in/}
+                output: {bucket: output-bucket, prefix: local/}
+                policy: %s
+                lease: {initial_seconds: 60, renew_seconds: 10}
+                worker: {threads: 2, onnx_threads: 1}
+                sample: {enabled: false}
+                """.formatted(policy));
+        // run never waits at the release gate, so it exits 6 although release_gate.enabled is true.
+        assertEquals(ExitCodes.QUARANTINE_LIMIT, exec("run", "-c", config.toString()));
+        final RunLayout layout = new RunLayout("output-bucket", "local/", "local-run");
+        final Success success = Json.read(store.get(layout.bucket(), layout.success()).orElseThrow().data(), Success.class);
+        assertEquals(12, success.counts().records(), "the entries that were not quarantined are written");
+        assertTrue(success.counts().quarantineLimitExceeded());
     }
 
     @Test

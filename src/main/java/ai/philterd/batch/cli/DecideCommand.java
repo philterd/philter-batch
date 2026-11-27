@@ -40,6 +40,10 @@ public abstract class DecideCommand implements Callable<Integer> {
     @Option(names = "--note", description = "Why, for the record.")
     String note;
 
+    boolean acceptQuarantine() {
+        return false;
+    }
+
     abstract Decision decision();
 
     @Override
@@ -65,7 +69,8 @@ public abstract class DecideCommand implements Callable<Integer> {
             }
         }
         try (store) {
-            final boolean recorded = new Gates(store, run).decide(which, decision(), by, note, Console.clock);
+            final boolean recorded = new Gates(store, run).decide(which, decision(), by, note, acceptQuarantine(),
+                    Console.clock);
             Console.out.println((recorded ? "Recorded: " : "Already recorded: ") + "the " + which.id() + " gate of run "
                     + run.runId() + " is " + decision().id() + ".");
         }
@@ -77,6 +82,16 @@ public abstract class DecideCommand implements Callable<Integer> {
                     "The sample after its report is written, the release after finalize. Writes",
                     "gates/<gate>-approved.json under the run's prefix; the workflow continues within a poll."})
     public static class Approve extends DecideCommand {
+
+        @Option(names = "--accept-quarantine", description = {"Approve a release whose quarantined entries exceed",
+                "quarantine.max_percent. Recorded in the decision."})
+        boolean acceptQuarantine;
+
+        @Override
+        boolean acceptQuarantine() {
+            return acceptQuarantine;
+        }
+
         @Override
         Decision decision() {
             return Decision.APPROVED;

@@ -4,6 +4,7 @@
 package ai.philterd.batch.finalize;
 
 import ai.philterd.batch.ExitCodes;
+import java.util.Locale;
 import ai.philterd.batch.config.RunConfig;
 import ai.philterd.batch.run.FormatException;
 import ai.philterd.batch.run.Formats;
@@ -227,9 +228,13 @@ public final class Finalizer {
         }
         store.put(layout.bucket(), layout.manifestSkipped(), skipped.toByteArray(), "application/x-ndjson");
 
+        final long quarantined = byStatus.getOrDefault(DocumentResult.QUARANTINED, 0L);
+        final RunConfig.Quarantine limit = config.quarantine();
         final Report report = new Report(Formats.FORMAT, config.runId(), clock.instant(), settings.outputMode(),
                 shardIds.size(), inventory.documents(), entries, byStatus, byReason, inventory.skippedByReason(), pii,
-                leftoverChecked, records, documentKeys.size(), withheld, partsDeleted, stagedDeleted);
+                leftoverChecked, records, documentKeys.size(), withheld, partsDeleted, stagedDeleted,
+                RunConfig.Quarantine.percent(quarantined, entries), limit.maxPercent(),
+                limit.exceeded(quarantined, entries));
         store.put(layout.bucket(), layout.report(), Json.write(report), "application/json");
         final Success success = new Success(Formats.FORMAT, config.runId(), clock.instant(), settings.policySha256(),
                 phileasVersion, pheyeOnnxVersion, models, System.getenv("PHILTER_BATCH_IMAGE_DIGEST"),
@@ -237,6 +242,11 @@ public final class Finalizer {
         store.put(layout.bucket(), layout.success(), Json.write(success), "application/json");
         LOGGER.info("Finalized run {}: {} entries {}, {} records, {} documents, quarantined {}.", config.runId(),
                 entries, byStatus, records, documentKeys.size(), byReason);
+        if (Boolean.TRUE.equals(report.quarantineLimitExceeded())) {
+            LOGGER.warn("Run {} quarantined {} of {} entries ({}%), above quarantine.max_percent ({}%).",
+                    config.runId(), quarantined, entries, String.format(Locale.ROOT, "%.2f", report.quarantinedPercent()),
+                    limit.maxPercent());
+        }
         return ExitCodes.OK;
     }
 

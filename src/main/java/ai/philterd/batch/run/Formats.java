@@ -6,6 +6,7 @@ package ai.philterd.batch.run;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * The versioned formats of a run's coordination objects. Each carries {@code format}; a reader refuses a newer
@@ -104,6 +105,31 @@ public final class Formats {
                              List<String> parts) {
     }
 
+    /**
+     * {@code counts/NNNNNN.json}: a completed shard's counts, written by the worker that created its done marker,
+     * after creating it, so that {@code status} can count quarantines during a run without reading every done marker.
+     * A shard whose done marker exists without one (the worker stopped in between) is counted from its done marker.
+     * @param entries The shard's entries.
+     * @param entriesByStatus Entries by {@code redacted}, {@code quarantined}, or {@code empty}.
+     * @param quarantinedByReason Quarantined entries by reason code.
+     */
+    public record ShardCounts(int format, String runId, String shard, long entries, Map<String, Long> entriesByStatus,
+                              Map<String, Long> quarantinedByReason) {
+
+        /** The counts of a shard's results. */
+        public static ShardCounts of(final String runId, final String shard, final List<DocumentResult> results) {
+            final Map<String, Long> byStatus = new TreeMap<>();
+            final Map<String, Long> byReason = new TreeMap<>();
+            for (final DocumentResult r : results) {
+                byStatus.merge(r.status(), 1L, Long::sum);
+                if (DocumentResult.QUARANTINED.equals(r.status()) && r.reason() != null) {
+                    byReason.merge(r.reason(), 1L, Long::sum);
+                }
+            }
+            return new ShardCounts(FORMAT, runId, shard, results.size(), byStatus, byReason);
+        }
+    }
+
     /** The settings a run was inventoried with. Every worker checks its own configuration against them. */
     public record RunSettings(int format, String runId, String outputMode, String charset,
                               List<String> extensions, String policySha256) {
@@ -135,12 +161,19 @@ public final class Formats {
                                 String status, String reason, String document) {
     }
 
-    /** {@code report.json} and the counts in {@code _SUCCESS}. */
+    /**
+     * {@code report.json} and the counts in {@code _SUCCESS}.
+     * @param quarantinedPercent Quarantined entries as a percentage of all entries.
+     * @param quarantineMaxPercent The run's {@code quarantine.max_percent}. Absent from reports written before it
+     *                             existed, as are the other two.
+     * @param quarantineLimitExceeded Whether {@code quarantinedPercent} is above {@code quarantineMaxPercent}.
+     */
     public record Report(int format, String runId, Instant completed, String outputMode, int shards,
                          long documents, long entries, Map<String, Long> entriesByStatus,
                          Map<String, Long> quarantinedByReason, Map<String, Long> skippedByReason,
                          Map<String, Long> piiCounts, long leftoverChecked, long records, long documentsWritten,
-                         long documentsWithheld, long partsDeleted, long stagedDeleted) {
+                         long documentsWithheld, long partsDeleted, long stagedDeleted, Double quarantinedPercent,
+                         Double quarantineMaxPercent, Boolean quarantineLimitExceeded) {
     }
 
     /** {@code _SUCCESS}: what produced the output. */
@@ -155,9 +188,11 @@ public final class Formats {
      * with {@code aws s3 cp}) need not be this JSON.
      * @param sampleReportSha256 For the sample gate, the SHA-256 of the {@code sample/report.html} that was approved
      *                           or rejected.
+     * @param quarantineAccepted For a release approved although the run's quarantines exceeded
+     *                           {@code quarantine.max_percent}: true. Absent otherwise.
      */
     public record GateDecision(int format, String runId, String gate, String decision, Instant decided, String by,
-                               String note, String sampleReportSha256) {
+                               String note, String sampleReportSha256, Boolean quarantineAccepted) {
     }
 
     /** One sampled entry in {@code sample/report.json}. Carries no input key, file name, or value. */

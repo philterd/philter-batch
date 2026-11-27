@@ -8,6 +8,8 @@ import ai.philterd.batch.config.RunConfig;
 import ai.philterd.batch.run.FormatException;
 import ai.philterd.batch.run.Formats;
 import ai.philterd.batch.run.Formats.GateDecision;
+import ai.philterd.batch.run.Formats.DocumentResult;
+import ai.philterd.batch.run.Formats.Report;
 import ai.philterd.batch.run.Formats.InventorySummary;
 import ai.philterd.batch.run.Hashes;
 import ai.philterd.batch.run.Json;
@@ -125,8 +127,28 @@ public final class Gates {
      * @return False if the same decision was already recorded.
      * @throws ConfigException If the gate does not exist, is not ready to approve, or the other decision was made.
      */
+    /** The run's {@code report.json}, once finalize has written it. */
+    public Optional<Report> report() {
+        return store.get(layout.bucket(), layout.report()).map(o -> Json.read(o.data(), Report.class));
+    }
+
+    /** Whether the finalized run's quarantined entries are above {@code quarantine.max_percent}. */
+    public boolean quarantineLimitExceeded() {
+        return report().map(r -> config.quarantine().exceeded(
+                r.entriesByStatus().getOrDefault(DocumentResult.QUARANTINED, 0L), r.entries())).orElse(false);
+    }
+
     public boolean decide(final Gate gate, final Decision decision, final String by, final String note,
                           final Clock clock) {
+        return decide(gate, decision, by, note, false, clock);
+    }
+
+    /**
+     * Records a decision. Approving a release whose quarantines exceed {@code quarantine.max_percent} needs
+     * {@code acceptQuarantine}, which the decision then records.
+     */
+    public boolean decide(final Gate gate, final Decision decision, final String by, final String note,
+                          final boolean acceptQuarantine, final Clock clock) {
         if (!active(gate)) {
             throw new ConfigException("Run " + config.runId() + " has no " + gate.id() + " gate"
                     + (gate == Gate.SAMPLE ? " (its sample is turned off)." : " (release_gate.enabled is false)."));
@@ -152,8 +174,21 @@ public final class Gates {
             throw new ConfigException("Run " + config.runId() + " has not been finalized; approve the release after "
                     + "reviewing its output.");
         }
+        Boolean quarantineAccepted = null;
+        if (gate == Gate.RELEASE && decision == Decision.APPROVED && quarantineLimitExceeded()) {
+            if (!acceptQuarantine) {
+                final Report r = report().orElseThrow();
+                throw new ConfigException(String.format(Locale.ROOT, "Run %s quarantined %,d of %,d entries "
+                        + "(%.2f%%), above quarantine.max_percent (%s%%). Review quarantined_by_reason in report.json "
+                        + "and the manifest, then approve with --accept-quarantine, or reject.", config.runId(),
+                        r.entriesByStatus().getOrDefault(DocumentResult.QUARANTINED, 0L), r.entries(),
+                        RunConfig.Quarantine.percent(r.entriesByStatus().getOrDefault(DocumentResult.QUARANTINED,
+                                0L), r.entries()), config.quarantine().maxPercent()));
+            }
+            quarantineAccepted = true;
+        }
         final GateDecision record = new GateDecision(Formats.FORMAT, config.runId(), gate.id(), decision.id(),
-                clock.instant(), by, note, reportSha256);
+                clock.instant(), by, note, reportSha256, quarantineAccepted);
         try {
             store.putIfAbsent(layout.bucket(), layout.gateMarker(gate.id(), decision.id()), Json.write(record),
                     "application/json");

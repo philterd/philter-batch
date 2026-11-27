@@ -27,7 +27,8 @@ import java.util.concurrent.Callable;
                 "Inventory, the sample, the sample gate, workers, and finalize. Waits at the sample gate for approve",
                 "or reject from another shell. Does not wait at the release gate. Uses the same coordination in",
                 "object storage, so it can be stopped and run again to resume.",
-                "Exit codes: 0 finalized or rejected, 1 error, 3 stopped by a signal."})
+                "Exit codes: 0 finalized or rejected, 1 error, 3 stopped by a signal, 6 finalized but the",
+                "quarantined entries exceed quarantine.max_percent (run has no release gate to hold it)."})
 public class RunCommand implements Callable<Integer> {
 
     private static final Logger LOGGER = LogManager.getLogger(RunCommand.class);
@@ -72,7 +73,8 @@ public class RunCommand implements Callable<Integer> {
         if (work != ExitCodes.OK) {
             return work;
         }
-        return new Finalizer(store, config, Clock.systemUTC()).run();
+        final int finalized = new Finalizer(store, config, Clock.systemUTC()).run();
+        return finalized == ExitCodes.OK ? FinalizeCommand.quarantineCheck(store, config, false) : finalized;
     }
 
 }

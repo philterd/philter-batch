@@ -107,6 +107,18 @@ interrupted spot nodes.
 | --- | --- | --- |
 | `release_gate.enabled` | `true` | After finalize, the workflow waits until a person approves or rejects the output. `run` does not wait at it. |
 
+## Quarantine limit
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `quarantine.max_percent` | `5` | Quarantined entries (files, or segments of large files) as a percentage of all entries, from 0 to 100. Above it, `approve release` refuses unless given `--accept-quarantine`; without a release gate (`release_gate.enabled: false`, or `run`), finalize and `run` exit 6. |
+
+The output of the entries that were not quarantined is written either way. In document and both modes, a
+large file split into segments is withheld from `documents/` when any one of its segments is quarantined, but only
+that segment counts toward the limit; `documents_withheld` in `report.json` counts the withheld files. The limit is read from the run's
+configuration, which is fixed once the run starts. A release marker written by hand (for example with `aws s3 cp`)
+is a decision without this check.
+
 ## In a deployment
 
 A run's configuration stored with `configure` differs from a local one in two ways:

@@ -83,6 +83,19 @@ public class StatusCommand implements Callable<Integer> {
                 }
                 line("Shards done", String.format(Locale.ROOT, "%,d of %,d", s.shardsDone(), s.shards()));
             }
+            final RunStatus.Quarantine q = s.quarantine();
+            if (q != null && q.entries() > 0) {
+                line("Quarantined", String.format(Locale.ROOT, "%,d of %,d entries%s (%.2f%%; limit %s%%)%s",
+                        q.quarantined(), q.entries(), q.complete() ? "" : " in completed shards", q.percent(),
+                        trim(q.maxPercent()), q.exceeded() ? (q.complete() ? ", ABOVE THE LIMIT" : ", above the limit so far")
+                                : ""));
+                if (!q.byReason().isEmpty()) {
+                    final StringBuilder reasons = new StringBuilder();
+                    q.byReason().forEach((reason, n) -> reasons.append(reasons.isEmpty() ? "" : ", ")
+                            .append(reason).append(' ').append(String.format(Locale.ROOT, "%,d", n)));
+                    line("  by reason", reasons.toString());
+                }
+            }
             line("Sample gate", gate(s.sampleGate(), s.sampleDecision()));
             line("Finalized", s.finalized() ? "yes" : "no");
             line("Release gate", gate(s.releaseGate(), s.releaseDecision()));
@@ -99,6 +112,11 @@ public class StatusCommand implements Callable<Integer> {
         }
         return state + " " + record.decided() + (record.by() == null ? "" : " by " + record.by())
                 + (record.note() == null ? "" : ": " + record.note());
+    }
+
+    /** 5.0 as 5, 2.5 as 2.5. */
+    private static String trim(final double value) {
+        return value == Math.rint(value) ? String.valueOf((long) value) : String.valueOf(value);
     }
 
     private static void line(final String name, final String value) {

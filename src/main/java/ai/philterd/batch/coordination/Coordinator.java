@@ -10,10 +10,12 @@ import ai.philterd.batch.run.Formats.Claim;
 import ai.philterd.batch.run.Formats.DoneMarker;
 import ai.philterd.batch.run.Formats.Progress;
 import ai.philterd.batch.run.Formats.Shard;
+import ai.philterd.batch.run.Formats.ShardCounts;
 import ai.philterd.batch.run.Json;
 import ai.philterd.batch.run.RunLayout;
 import ai.philterd.batch.store.ObjectInfo;
 import ai.philterd.batch.store.ObjectStore;
+import ai.philterd.batch.store.ObjectStoreException;
 import ai.philterd.batch.store.PreconditionFailedException;
 import ai.philterd.batch.store.PutResult;
 import ai.philterd.batch.store.StoredObject;
@@ -319,19 +321,26 @@ public final class Coordinator {
     }
 
     /**
-     * Creates the shard's done marker if absent. Returns false if one already existed: another worker finished
-     * the same shard, and its parts are the ones finalize keeps.
+     * Creates the shard's done marker if absent, then the shard's counts. Returns false if a done marker already
+     * existed: another worker finished the same shard, and its parts are the ones finalize keeps.
      */
     public boolean complete(final HeldShard held, final DoneMarker done) {
         try {
             final PutResult put = store.putIfAbsent(layout.bucket(), layout.done(held.id()), Json.write(done), JSON);
             clock.observe(put.serverTime());
             LOGGER.info("Shard {} is done.", held.id());
-            return true;
         } catch (final PreconditionFailedException e) {
             LOGGER.info("Shard {} was already done by another worker.", held.id());
             return false;
         }
+        // Only for status: a failure here leaves the shard counted from its done marker instead.
+        try {
+            store.put(layout.bucket(), layout.counts(held.id()),
+                    Json.write(ShardCounts.of(done.runId(), held.id(), done.results())), JSON);
+        } catch (final ObjectStoreException e) {
+            LOGGER.warn("Writing the counts of shard {} failed; status reads its done marker instead.", held.id());
+        }
+        return true;
     }
 
     public Shard readShard(final String id) {
