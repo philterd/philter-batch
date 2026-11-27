@@ -95,6 +95,7 @@ details below. Run the commands from the repository's root unless a step changes
 | EKS cluster | Kubernetes 1.35, private endpoint, `API` authentication mode, standard support only, all control plane log types to a log group the stack owns. |
 | Add-ons | VPC CNI with `enableNetworkPolicy`, kube-proxy, EKS Pod Identity agent, CoreDNS, at EKS's default version for the Kubernetes version unless `addon_versions` pins them. |
 | Node groups | `system`: on demand, label `philterd.ai/node-pool=system`. `workers`: Spot, label `philterd.ai/node-pool=workers`, taint `philterd.ai/node-pool=workers:NoSchedule`. IMDSv2 with a hop limit of 1, encrypted gp3 volumes. |
+| Placement | Set in the chart values the stack passes, not by the charts' defaults. On `system`: Argo's controller and CRD installer, the console, and the workflow's preflight, inventory, gate, and finalize steps. On `workers`, with a toleration for its taint: the sample pod and the worker pods. CoreDNS runs on `system`; the add-ons that run on every node (the VPC CNI, kube-proxy, and the Pod Identity agent) run on both. |
 | Access entry | The operator's role or user, as cluster admin. |
 | IAM roles | Workers, console, cluster, nodes, access host. |
 | Access host | A `t3.micro` with no public address and no inbound rules, for an SSM port forward to the private endpoint. Skipped with `access_host_enabled = false`. |
@@ -289,6 +290,7 @@ terraform destroy
 | `apply` fails at the Helm releases with a connection error | The API is not reachable: start the port forward and set `kubernetes_api_server`, or use one of the other access paths. |
 | The plan fails in `data.aws_ecr_image` | An image is not in ECR at its digest: run `scripts/push-images.sh`. |
 | Pods stay `ImagePullBackOff` | The S3 endpoint policy or the `ecr.*` endpoints: an image was copied to another region or registry than `ecr_registry`. |
+| The console, Argo's controller, or a preflight, inventory, gate, or finalize pod stays `Pending` | The `system` group lacks room: they all run there, beside CoreDNS. Raise `system_nodes.desired_size` or use larger `system_nodes.instance_types`. |
 | Worker pods stay `Pending` | Fewer worker nodes than `workers.count`, or Spot capacity unavailable for the instance types: add types to `worker_nodes.instance_types`, or set `capacity_type = "ON_DEMAND"`. |
 | `check-store` fails with access denied | The workers' role, its Pod Identity association, or the network policy's egress to the Pod Identity agent (`169.254.170.23:80`). |
 | `destroy` stops at `workflow_guard` | A workflow is running; see Destroy. With exit 2, the API was not reachable. |
