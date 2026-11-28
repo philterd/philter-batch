@@ -165,14 +165,30 @@ class PhileasDocumentRedactorTest {
     }
 
     @Test
-    void anOutlookMessagesAttachmentIsKeptUnreadByDefault() throws Exception {
-        // Phileas's default, config.email.attachments: keep. The attachment is not in the text, and it is copied
-        // into the redacted message as it was.
+    void anOutlookMessagesAttachmentIsRemovedByDefault() throws Exception {
+        // Phileas's default, config.email.attachments: remove (philterd/phileas#559). The attachment is not in the
+        // text, and the redacted message has none.
         final byte[] msg = Documents.msg(Documents.pdf());
         final TextRedactor.DocumentRedaction text = redactor.redactDocument(DocumentType.EMAIL, msg, true);
         assertTrue(text.sections().stream().noneMatch(x -> x.label().startsWith("attachment")),
                 text.sections().stream().map(TextRedactor.Section::label).toList().toString());
         final byte[] document = redactor.redactDocument(DocumentType.EMAIL, msg, false).document();
+        assertEquals("", attachmentText(document), "the attachment is removed");
+        assertFalse(new String(document, StandardCharsets.ISO_8859_1).contains(Documents.EMAIL));
+    }
+
+    @Test
+    void anOutlookMessagesAttachmentIsKeptUnreadWhenThePolicySays() throws Exception {
+        // config.email.attachments: keep. The attachment is not in the text, and it is copied into the redacted
+        // message as it was.
+        final PhileasRedactor keeping = new PhileasRedactor(LoadedPolicy.load(Fixtures.REGEX_POLICY
+                .replace("{\"name\":\"test\",", "{\"name\":\"test\",\"config\":{\"email\":{\"attachments\":\"keep\"}},")
+                .getBytes(StandardCharsets.UTF_8), Path.of("/nonexistent")), CONFIGURATION);
+        final byte[] msg = Documents.msg(Documents.pdf());
+        final TextRedactor.DocumentRedaction text = keeping.redactDocument(DocumentType.EMAIL, msg, true);
+        assertTrue(text.sections().stream().noneMatch(x -> x.label().startsWith("attachment")),
+                text.sections().stream().map(TextRedactor.Section::label).toList().toString());
+        final byte[] document = keeping.redactDocument(DocumentType.EMAIL, msg, false).document();
         assertTrue(attachmentText(document).contains(Documents.EMAIL), "the kept attachment is unredacted");
     }
 
