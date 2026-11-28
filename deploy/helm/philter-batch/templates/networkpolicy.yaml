@@ -10,7 +10,8 @@ spec:
   podSelector: {}
   policyTypes: ["Ingress", "Egress"]
 ---
-# The run's pods may reach DNS, the Kubernetes API (for Argo's executor), and the object store, and nothing else.
+# The run's pods may reach DNS, the Kubernetes API (for Argo's executor), the object store, and Secrets Manager when a
+# pseudonymization secret is set, and nothing else.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -41,6 +42,12 @@ spec:
         {{- toYaml .Values.networkPolicy.objectStore.to | nindent 8 }}
       ports:
         {{- toYaml .Values.networkPolicy.objectStore.ports | nindent 8 }}
+    {{- if .Values.pseudonymization.secretArn }}
+    - to:
+        {{- toYaml .Values.networkPolicy.secretsManager.to | nindent 8 }}
+      ports:
+        {{- toYaml .Values.networkPolicy.secretsManager.ports | nindent 8 }}
+    {{- end }}
     {{- with .Values.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

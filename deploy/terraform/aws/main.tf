@@ -80,7 +80,21 @@ locals {
   cluster_endpoint_services = var.internet_access ? ["ec2", "eks", "eks-auth"] : ["ec2", "ecr.api", "ecr.dkr", "eks", "eks-auth"]
   ssm_endpoint_services     = ["ssm", "ssmmessages", "ec2messages"]
   interface_endpoint_services = concat(local.cluster_endpoint_services,
-  var.access_host_enabled ? local.ssm_endpoint_services : [])
+    var.access_host_enabled ? local.ssm_endpoint_services : [],
+  local.pseudonymization_enabled ? ["secretsmanager"] : [])
+
+  # --- The pseudonymization secret ------------------------------------------------------------------------------------
+  # Its interface endpoint is created whenever the feature is on, with internet_access too, so the pods' NetworkPolicy
+  # allows Secrets Manager at the VPC's addresses only, not the internet.
+  pseudonymization_enabled = var.create_pseudonymization_secret || var.pseudonymization_secret_arn != null
+  pseudonymization_secret_arn = (var.create_pseudonymization_secret ? module.pseudonymization_secret[0].arn
+  : var.pseudonymization_secret_arn)
+  # An existing secret's KMS key, as Secrets Manager reports it: empty for the AWS managed key, else a key ID or ARN.
+  existing_secret_kms_key = try(data.aws_secretsmanager_secret.pseudonymization[0].kms_key_id, "")
+  pseudonymization_kms_key_arn = (var.create_pseudonymization_secret ? var.pseudonymization_secret_kms_key_arn
+    : local.existing_secret_kms_key == null || local.existing_secret_kms_key == "" ? null
+    : startswith(local.existing_secret_kms_key, "arn:") ? local.existing_secret_kms_key
+  : "arn:${data.aws_partition.current.partition}:kms:${var.region}:${data.aws_caller_identity.current.account_id}:key/${local.existing_secret_kms_key}")
 
   input_bucket_arn  = "arn:${data.aws_partition.current.partition}:s3:::${var.input_bucket}"
   output_bucket_arn = "arn:${data.aws_partition.current.partition}:s3:::${var.output_bucket}"
@@ -149,9 +163,10 @@ locals {
       var.internet_access ? { repository = local.image_refs["philter-batch"].repository } : {},
       try(local.images["philter-batch"].digest, "") == "" ? { digest = local.digests["philter-batch"] } : {}
     )
-    store          = { type = "s3", region = var.region }
-    output         = { bucket = var.output_bucket, prefix = var.output_prefix }
-    serviceAccount = { create = true, name = local.workers_service_account }
+    store            = { type = "s3", region = var.region }
+    pseudonymization = local.pseudonymization_enabled ? { secretArn = local.pseudonymization_secret_arn } : {}
+    output           = { bucket = var.output_bucket, prefix = var.output_prefix }
+    serviceAccount   = { create = true, name = local.workers_service_account }
     console = {
       serviceAccount = { create = true, name = local.console_service_account }
       nodeSelector   = local.system_selector
@@ -175,6 +190,8 @@ locals {
       ) }
       # S3, reached through the gateway endpoint, at the addresses in the region's S3 prefix list.
       objectStore = { to = [for e in data.aws_ec2_managed_prefix_list.s3.entries : { ipBlock = { cidr = e.cidr } }] }
+      # Secrets Manager's interface endpoint, in the VPC.
+      secretsManager = { to = local.pseudonymization_enabled ? [{ ipBlock = { cidr = module.network.vpc_cidr } }] : [] }
       # The EKS Pod Identity agent, on each node's link-local address, from which pods get their credentials.
       extraEgress = [{
         to    = [{ ipBlock = { cidr = "169.254.170.23/32" } }]
@@ -209,6 +226,25 @@ resource "terraform_data" "input_checks" {
     precondition {
       condition     = var.create_vpc || (var.vpc_id != null && length(var.subnet_ids) >= 2 && (!var.create_vpc_endpoints || length(var.route_table_ids) > 0))
       error_message = "With create_vpc false, give vpc_id, at least two subnet_ids, and (for the S3 endpoint) route_table_ids."
+    }
+    precondition {
+      condition     = !(var.create_pseudonymization_secret && var.pseudonymization_secret_arn != null)
+      error_message = "Set pseudonymization_secret_arn (an existing secret) or create_pseudonymization_secret, not both."
+    }
+    precondition {
+      condition = var.pseudonymization_secret_arn == null || (
+        split(":", coalesce(var.pseudonymization_secret_arn, "a:b:c:d:e"))[3] == var.region &&
+        split(":", coalesce(var.pseudonymization_secret_arn, "a:b:c:d:e"))[4] == data.aws_caller_identity.current.account_id
+      )
+      error_message = "pseudonymization_secret_arn must be a secret in this account and region (a secret in another account is not supported)."
+    }
+    precondition {
+      condition     = local.pseudonymization_kms_key_arn == null || can(regex(":key/", coalesce(local.pseudonymization_kms_key_arn, "x")))
+      error_message = "The pseudonymization secret's KMS key must be a key, not an alias, so the workers can be granted kms:Decrypt on it."
+    }
+    precondition {
+      condition     = !var.console_reads_pseudonymization_secret || local.pseudonymization_enabled
+      error_message = "console_reads_pseudonymization_secret needs pseudonymization_secret_arn or create_pseudonymization_secret."
     }
     precondition {
       condition     = !var.create_output_bucket || length(var.output_kms_key_arns) <= 1
@@ -271,6 +307,25 @@ module "iam" {
   output_prefix           = var.output_prefix
   input_kms_key_arns      = var.input_kms_key_arns
   output_kms_key_arns     = var.output_kms_key_arns
+
+  pseudonymization_secret_arn           = local.pseudonymization_secret_arn
+  pseudonymization_kms_key_arn          = local.pseudonymization_kms_key_arn
+  console_reads_pseudonymization_secret = var.console_reads_pseudonymization_secret
+}
+
+# An existing pseudonymization secret's metadata (DescribeSecret), for its KMS key. Never its value.
+data "aws_secretsmanager_secret" "pseudonymization" {
+  count = var.pseudonymization_secret_arn != null ? 1 : 0
+  arn   = var.pseudonymization_secret_arn
+}
+
+module "pseudonymization_secret" {
+  source = "./modules/pseudonymization-secret"
+  count  = var.create_pseudonymization_secret ? 1 : 0
+
+  name        = "${var.name}-pseudonymization"
+  kms_key_arn = var.pseudonymization_secret_kms_key_arn
+  tags        = var.tags
 }
 
 module "output_bucket" {

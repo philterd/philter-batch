@@ -65,6 +65,18 @@ Only `parts/` and `documents/` are output for the training pipeline or the custo
 A run that handles more than plain text also records `types`, each handled type with its extensions, such as
 `"types": {"pdf": ["pdf"], "text": ["txt", "md", "log"]}`. A plain-text-only run has no `types`.
 
+A run whose policy uses `FPE_ENCRYPT_REPLACE` or `CRYPTO_REPLACE` also records `key`, the pseudonymization secret's
+version its keys come from:
+
+```json
+"key": {"secret_arn": "arn:aws:secretsmanager:us-east-1:111122223333:secret:philter-batch-AbCdEf",
+        "version_id": "0d0f2c4e-0000-4000-8000-000000000000", "fingerprint": "b0f7..."}
+```
+
+`fingerprint` is 32 bytes derived from the secret's value with HKDF-SHA256 and its own label, in hex; it reveals
+neither the value nor a key. Every process reads `version_id` and stops if the value does not give `fingerprint`
+([configuration](configuration.md#pseudonymization-secret)). `run.json` never holds a key.
+
 Written once by the inventory. Every worker compares its own configuration with it and refuses to start on a
 difference, so all shards of a run are processed the same way.
 
@@ -248,11 +260,14 @@ markers, so they are not redone, and finalize includes their output.
   (the sample pod's, the same as a worker's) is the rate per pod. Absent if no entry was timed.
 - `estimate`: the inventory's bytes and entries less the sample's, at that rate, over `worker_pods` pods. `cost`
   and `price_per_worker_hour` are present when the configuration sets `sample.price_per_worker_hour`.
+- `policy_warnings`: the policy's strategies the reviewer should know about (`CRYPTO_REPLACE`, `HASH_SHA256_REPLACE`
+  without `salt`, `LAST_4`), each with `where` (such as `identifiers.ssn.ssnFilterStrategies[0]`), `strategy`, and
+  `message`. Empty when there are none.
 - `samples`: one per sampled entry, with no input key or file name. `output` names its sample document, in document
   and both modes.
 
 `report.html` is the same report for people: each sampled entry's redacted text, with the replacements highlighted
-by type, and the counts, throughput, and estimate. It holds redacted text only, never an original value or an input
+by type, the policy's warnings, and the counts, throughput, and estimate. It holds redacted text only, never an original value or an input
 key, and is self-contained: its content security policy forbids scripts and any request.
 
 ### gates/

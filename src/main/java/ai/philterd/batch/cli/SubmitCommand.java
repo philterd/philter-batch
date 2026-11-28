@@ -9,6 +9,7 @@ import ai.philterd.batch.config.Deployment;
 import ai.philterd.batch.config.RunConfig;
 import ai.philterd.batch.console.RunStatus;
 import ai.philterd.batch.console.Workflows;
+import ai.philterd.batch.keys.RunKeys;
 import ai.philterd.batch.redaction.LoadedPolicy;
 import ai.philterd.batch.run.RunLayout;
 import ai.philterd.batch.store.ObjectStore;
@@ -40,7 +41,7 @@ public class SubmitCommand implements Callable<Integer> {
             final byte[] policy = store.get(layout.bucket(), layout.storedPolicy()).orElseThrow(() ->
                     new ConfigException("Run " + runId + " has no policy: philter-batch set-policy " + runId
                             + " --stdin < policy.json")).data();
-            LoadedPolicy.load(policy, Path.of(config.modelsDirectory()));
+            RunKeys.requireSecret(config, LoadedPolicy.load(policy, Path.of(config.modelsDirectory())));
             final Workflows workflows = Console.workflows.get();
             final RunStatus status = RunStatus.read(store, d, runId, workflows);
             if (status.stage().ended()) {

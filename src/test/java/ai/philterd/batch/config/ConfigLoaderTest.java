@@ -234,4 +234,35 @@ class ConfigLoaderTest {
         assertThrows(ConfigException.class, () -> ConfigLoader.loadDeployment(dir.resolve("missing.yaml")));
     }
 
+    private static final String ARN = "arn:aws:secretsmanager:us-east-1:111122223333:secret:philter-batch-AbCdEf";
+
+    @Test
+    void thePseudonymizationSecretComesFromTheDeployment(@TempDir final Path dir) throws Exception {
+        final Deployment keyed = new Deployment(DEPLOYMENT.store(), DEPLOYMENT.output(),
+                new RunConfig.Pseudonymization(ARN, null));
+        final RunConfig c = ConfigLoader.parseStored(STORED, keyed);
+        assertEquals(ARN, c.pseudonymization().secretArn());
+        assertEquals("us-east-1", c.pseudonymization().region());
+        ConfigLoader.parseStored(STORED + "pseudonymization: {secret_arn: " + ARN + "}\n", keyed);
+        assertThrows(ConfigException.class, () -> ConfigLoader.parseStored(STORED
+                + "pseudonymization: {secret_arn: " + ARN.replace("AbCdEf", "ZyXwVu") + "}\n", keyed));
+        // A run in a deployment without a secret cannot name one.
+        assertFalse(ConfigLoader.parseStored(STORED, DEPLOYMENT).pseudonymization().configured());
+        assertThrows(ConfigException.class, () -> ConfigLoader.parseStored(STORED
+                + "pseudonymization: {secret_arn: " + ARN + "}\n", DEPLOYMENT));
+
+        final Path file = dir.resolve("deployment.yaml");
+        Files.writeString(file, "output: {bucket: b}\npseudonymization: {secret_arn: " + ARN + "}\n");
+        assertEquals(ARN, ConfigLoader.loadDeployment(file).pseudonymization().secretArn());
+        for (final String bad : List.of("philter-batch", "arn:aws:secretsmanager:us-east-1:111122223333:secret:nosuffix",
+                "arn:aws:s3:::bucket", "arn:aws:secretsmanager:us-east-1:1111:secret:x-AbCdEf")) {
+            Files.writeString(file, "output: {bucket: b}\npseudonymization: {secret_arn: \"" + bad + "\"}\n");
+            assertThrows(ConfigException.class, () -> ConfigLoader.loadDeployment(file), bad);
+            assertThrows(ConfigException.class, () -> ConfigLoader.parse(MINIMAL + "pseudonymization: {secret_arn: \""
+                    + bad + "\"}\n"), bad);
+        }
+        assertThrows(ConfigException.class, () -> ConfigLoader.parse(MINIMAL
+                + "pseudonymization: {endpoint: http://localhost:4566}\n"));
+    }
+
 }

@@ -34,7 +34,8 @@ public record RunConfig(
         Worker worker,
         Sample sample,
         ReleaseGate releaseGate,
-        Quarantine quarantine) {
+        Quarantine quarantine,
+        Pseudonymization pseudonymization) {
 
     public RunConfig {
         store = store == null ? new Store(null, null, null, null) : store;
@@ -49,6 +50,7 @@ public record RunConfig(
         sample = sample == null ? new Sample(null, null, null, null, null, null) : sample;
         releaseGate = releaseGate == null ? new ReleaseGate(null) : releaseGate;
         quarantine = quarantine == null ? new Quarantine(null) : quarantine;
+        pseudonymization = pseudonymization == null ? new Pseudonymization(null, null) : pseudonymization;
     }
 
     /** The extensions of a type: {@code plain_text.extensions} for plain text, else its configured or default ones. */
@@ -60,13 +62,13 @@ public record RunConfig(
     /** This configuration with the worker's settings replaced, for the per-pod settings a deployment sets. */
     public RunConfig withWorker(final Worker replacement) {
         return new RunConfig(runId, store, input, output, policy, modelsDirectory, policyFilesDirectories, plainText,
-                inputTypes, inventory, lease, replacement, sample, releaseGate, quarantine);
+                inputTypes, inventory, lease, replacement, sample, releaseGate, quarantine, pseudonymization);
     }
 
     /** This configuration with the store and output location replaced. */
     public RunConfig withLocation(final Store newStore, final Output newOutput) {
         return new RunConfig(runId, newStore, input, newOutput, policy, modelsDirectory, policyFilesDirectories,
-                plainText, inputTypes, inventory, lease, worker, sample, releaseGate, quarantine);
+                plainText, inputTypes, inventory, lease, worker, sample, releaseGate, quarantine, pseudonymization);
     }
 
     /**
@@ -85,6 +87,24 @@ public record RunConfig(
             size = size == null ? 50 : size;
             reportMaxChars = reportMaxChars == null ? 20_000 : reportMaxChars;
             currency = currency == null ? "USD" : currency;
+        }
+    }
+
+    /**
+     * The secret that keys {@code FPE_ENCRYPT_REPLACE} and {@code CRYPTO_REPLACE}: an AWS Secrets Manager secret
+     * holding one random value of at least 32 bytes, from which the keys are derived. A policy never holds a key.
+     * @param secretArn The secret's ARN. Unset: a policy using those strategies is refused.
+     * @param endpoint A Secrets Manager endpoint instead of AWS's, for testing.
+     */
+    public record Pseudonymization(String secretArn, String endpoint) {
+
+        public boolean configured() {
+            return secretArn != null && !secretArn.isBlank();
+        }
+
+        /** The region in the ARN. */
+        public String region() {
+            return secretArn.split(":", 6)[3];
         }
     }
 

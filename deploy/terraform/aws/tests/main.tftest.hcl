@@ -490,3 +490,172 @@ run "internet_access_existing_vpc" {
     error_message = "With internet_access, the images come from public registries in an existing VPC too."
   }
 }
+
+# --- The pseudonymization secret (philter-batch#13) -------------------------------------------------------------------
+
+run "pseudonymization_off_by_default" {
+  command = plan
+  assert {
+    condition     = !contains(output.interface_endpoints, "secretsmanager")
+    error_message = "No Secrets Manager endpoint without a pseudonymization secret."
+  }
+  assert {
+    condition     = !strcontains(module.iam.workers_policy, "secretsmanager") && !strcontains(module.iam.console_policy, "secretsmanager")
+    error_message = "No role may read a secret without a pseudonymization secret."
+  }
+  assert {
+    condition     = length(output.philter_batch_values.pseudonymization) == 0 && length(output.philter_batch_values.networkPolicy.secretsManager.to) == 0
+    error_message = "The chart gets no secret: ${jsonencode(output.philter_batch_values.pseudonymization)}"
+  }
+  assert {
+    condition     = length(module.pseudonymization_secret) == 0
+    error_message = "No secret is created by default."
+  }
+}
+
+run "pseudonymization_existing_secret" {
+  command = plan
+  variables {
+    pseudonymization_secret_arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:example-pseudonymization-AbCdEf"
+  }
+  override_data {
+    target = data.aws_secretsmanager_secret.pseudonymization[0]
+    values = { kms_key_id = "arn:aws:kms:us-east-1:111122223333:key/22222222-2222-2222-2222-222222222222" }
+  }
+  assert {
+    condition     = contains(output.interface_endpoints, "secretsmanager")
+    error_message = "The Secrets Manager endpoint is missing: ${jsonencode(output.interface_endpoints)}"
+  }
+  assert {
+    condition = [for s in jsondecode(module.iam.workers_policy).Statement : s if strcontains(jsonencode(s.Action), "secretsmanager")] == [{
+      Sid      = "ReadPseudonymizationSecret"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = ["arn:aws:secretsmanager:us-east-1:111122223333:secret:example-pseudonymization-AbCdEf"]
+    }]
+    error_message = "The workers must read only the configured secret: ${module.iam.workers_policy}"
+  }
+  assert {
+    condition = one([for s in jsondecode(module.iam.workers_policy).Statement : s if s.Sid == "DecryptPseudonymizationSecret"]) == {
+      Sid      = "DecryptPseudonymizationSecret"
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt"]
+      Resource = ["arn:aws:kms:us-east-1:111122223333:key/22222222-2222-2222-2222-222222222222"]
+      Condition = { StringEquals = {
+        "kms:ViaService"                  = "secretsmanager.us-east-1.amazonaws.com"
+        "kms:EncryptionContext:SecretARN" = "arn:aws:secretsmanager:us-east-1:111122223333:secret:example-pseudonymization-AbCdEf"
+      } }
+    }
+    error_message = "Unexpected KMS grant: ${module.iam.workers_policy}"
+  }
+  assert {
+    condition     = !strcontains(module.iam.console_policy, "secretsmanager") && !strcontains(module.iam.console_policy, "22222222-2222")
+    error_message = "The console may not read the secret unless asked: ${module.iam.console_policy}"
+  }
+  assert {
+    condition     = jsonencode(output.philter_batch_values.pseudonymization) == jsonencode({ secretArn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:example-pseudonymization-AbCdEf" })
+    error_message = "Unexpected chart values: ${jsonencode(output.philter_batch_values.pseudonymization)}"
+  }
+  assert {
+    condition     = jsonencode(output.philter_batch_values.networkPolicy.secretsManager.to) == jsonencode([{ ipBlock = { cidr = "10.80.0.0/16" } }])
+    error_message = "The pods must reach Secrets Manager in the VPC only: ${jsonencode(output.philter_batch_values.networkPolicy.secretsManager)}"
+  }
+  assert {
+    condition     = length(module.pseudonymization_secret) == 0
+    error_message = "An existing secret is not created."
+  }
+}
+
+run "pseudonymization_existing_secret_with_a_key_id_and_console_access" {
+  command = plan
+  variables {
+    pseudonymization_secret_arn           = "arn:aws:secretsmanager:us-east-1:111122223333:secret:example-pseudonymization-AbCdEf"
+    console_reads_pseudonymization_secret = true
+    internet_access                       = true
+  }
+  override_data {
+    target = data.aws_secretsmanager_secret.pseudonymization[0]
+    values = { kms_key_id = "33333333-3333-3333-3333-333333333333" }
+  }
+  assert {
+    condition     = contains(output.interface_endpoints, "secretsmanager")
+    error_message = "The Secrets Manager endpoint is created with internet_access too, so the pods need no route to the internet."
+  }
+  assert {
+    condition     = strcontains(module.iam.console_policy, "\"arn:aws:kms:us-east-1:111122223333:key/33333333-3333-3333-3333-333333333333\"") && strcontains(module.iam.console_policy, "secretsmanager:GetSecretValue")
+    error_message = "The console must read the secret when asked: ${module.iam.console_policy}"
+  }
+}
+
+run "pseudonymization_existing_secret_with_the_aws_managed_key" {
+  command = plan
+  variables {
+    pseudonymization_secret_arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:example-pseudonymization-AbCdEf"
+  }
+  override_data {
+    target = data.aws_secretsmanager_secret.pseudonymization[0]
+    values = { kms_key_id = "" }
+  }
+  assert {
+    condition     = !strcontains(module.iam.workers_policy, "DecryptPseudonymizationSecret")
+    error_message = "The AWS managed key needs no grant."
+  }
+}
+
+# That the created secret's value is not in the state is tests/pseudonymization_secret, which applies the module.
+run "pseudonymization_created_secret" {
+  command = plan
+  variables {
+    create_pseudonymization_secret = true
+  }
+  override_resource {
+    target          = module.pseudonymization_secret[0].aws_secretsmanager_secret.this
+    override_during = plan
+    values          = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:philter-batch-pseudonymization-AbCdEf" }
+  }
+  assert {
+    condition     = module.pseudonymization_secret[0].arn == "arn:aws:secretsmanager:us-east-1:111122223333:secret:philter-batch-pseudonymization-AbCdEf"
+    error_message = "The secret is created."
+  }
+  assert {
+    condition     = contains(output.interface_endpoints, "secretsmanager") && strcontains(module.iam.workers_policy, "philter-batch-pseudonymization-AbCdEf")
+    error_message = "The workers must read the created secret: ${module.iam.workers_policy}"
+  }
+  assert {
+    condition     = output.philter_batch_values.pseudonymization.secretArn == module.pseudonymization_secret[0].arn
+    error_message = "The chart must get the created secret."
+  }
+}
+
+run "pseudonymization_both_set_is_refused" {
+  command = plan
+  variables {
+    pseudonymization_secret_arn    = "arn:aws:secretsmanager:us-east-1:111122223333:secret:example-pseudonymization-AbCdEf"
+    create_pseudonymization_secret = true
+  }
+  expect_failures = [terraform_data.input_checks]
+}
+
+run "pseudonymization_secret_in_another_account_is_refused" {
+  command = plan
+  variables {
+    pseudonymization_secret_arn = "arn:aws:secretsmanager:us-east-1:444455556666:secret:example-pseudonymization-AbCdEf"
+  }
+  expect_failures = [terraform_data.input_checks]
+}
+
+run "pseudonymization_secret_name_without_arn_is_refused" {
+  command = plan
+  variables {
+    pseudonymization_secret_arn = "example-pseudonymization"
+  }
+  expect_failures = [var.pseudonymization_secret_arn]
+}
+
+run "console_access_without_a_secret_is_refused" {
+  command = plan
+  variables {
+    console_reads_pseudonymization_secret = true
+  }
+  expect_failures = [terraform_data.input_checks]
+}

@@ -151,9 +151,22 @@ public final class Formats {
     /**
      * The settings a run was inventoried with. Every worker checks its own configuration against them.
      * @param types The handled types and their extensions. Absent when the run handles plain text only.
+     * @param key The pseudonymization secret's version the run's keys come from. Absent when the policy needs no key.
      */
     public record RunSettings(int format, String runId, String outputMode, String charset,
-                              List<String> extensions, String policySha256, Map<String, List<String>> types) {
+                              List<String> extensions, String policySha256, Map<String, List<String>> types,
+                              KeyPin key) {
+    }
+
+    /**
+     * The version of the pseudonymization secret a run's keys are derived from, pinned when the run is inventoried so
+     * that a rotation cannot give part of a run another key.
+     * @param secretArn The secret.
+     * @param versionId The secret's {@code VersionId}.
+     * @param fingerprint A value derived from the secret with its own HKDF label, so it identifies the key without
+     *                    revealing it or any key derived from it. Hex.
+     */
+    public record KeyPin(String secretArn, String versionId, String fingerprint) {
     }
 
     /** Counts and bytes for one extension in the input. */
@@ -256,7 +269,16 @@ public final class Formats {
                                Map<String, Long> entriesByExtension, Map<String, Long> entriesByStatus,
                                Map<String, Long> quarantinedByReason, Map<String, Long> piiCounts,
                                Map<String, Long> leftoverCounts, long leftoverChecked, Throughput throughput,
-                               Estimate estimate, List<SampleEntry> samples) {
+                               Estimate estimate, List<SampleEntry> samples, List<PolicyWarning> policyWarnings) {
+    }
+
+    /**
+     * A strategy in the policy that weakens the output in a way a reviewer should see before approving the sample.
+     * @param where The strategy's place in the policy, such as {@code identifiers.ssn[0]}.
+     * @param strategy The strategy, such as {@code LAST_4}.
+     * @param message What it means for the output.
+     */
+    public record PolicyWarning(String where, String strategy, String message) {
     }
 
     /** A PhEye model the policy names: its directory name and the SHA-256 of its ONNX file. */

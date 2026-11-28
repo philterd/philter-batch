@@ -126,7 +126,7 @@ gateway rather than the S3 gateway endpoint, whose policy allows only the input 
 | VPC, one private subnet per availability zone (2 by default), one route table | By default no internet gateway and no NAT gateway: the route table holds only the local and S3 gateway routes, and Terraform removes any other route added later. Skipped with `create_vpc = false`. |
 | Internet gateway, public subnet (the VPC's last /20), Elastic IP, NAT gateway | Only with `internet_access` and `create_vpc`. The private route table then holds one more route, `0.0.0.0/0` to the NAT gateway. |
 | S3 gateway endpoint | Its policy allows only the input (read), the output prefix (read and write), and, without `internet_access`, ECR's layer bucket `prod-<region>-starport-layer-bucket`. |
-| Interface endpoints, private DNS on | `ec2`, `eks`, `eks-auth`, `ecr.api` and `ecr.dkr` (without `internet_access`), and, for the access host, `ssm`, `ssmmessages`, `ec2messages`. |
+| Interface endpoints, private DNS on | `ec2`, `eks`, `eks-auth`, `ecr.api` and `ecr.dkr` (without `internet_access`), for the access host `ssm`, `ssmmessages`, `ec2messages`, and, with a pseudonymization secret, `secretsmanager` (with `internet_access` too, so the pods' network policy allows Secrets Manager at the VPC's addresses only). |
 | EKS cluster | Kubernetes 1.35, private endpoint, `API` authentication mode, standard support only, all control plane log types to a log group the stack owns. |
 | Add-ons | VPC CNI with `enableNetworkPolicy`, kube-proxy, EKS Pod Identity agent, CoreDNS, at EKS's default version for the Kubernetes version unless `addon_versions` pins them. |
 | Node groups | `system`: on demand, label `philterd.ai/node-pool=system`. `workers`: Spot, label `philterd.ai/node-pool=workers`, taint `philterd.ai/node-pool=workers:NoSchedule`. IMDSv2 with a hop limit of 1, encrypted gp3 volumes. |
@@ -136,6 +136,7 @@ gateway rather than the S3 gateway endpoint, whose policy allows only the input 
 | Access host | A `t3.micro` with no public address and no inbound rules, for an SSM port forward to the private endpoint. Skipped with `access_host_enabled = false`. |
 | Helm releases | Argo Workflows (chart 2.0.18, v4.1.6, no server) in `argo`; Philter Batch in `philter-batch`. |
 | Output bucket | Only with `create_output_bucket = true`; kept on destroy. |
+| Pseudonymization secret | Only with `create_pseudonymization_secret = true`: a Secrets Manager secret with a random value of 64 letters and digits, written through `secret_string_wo` so it is in neither the plan nor the state; no rotation; kept on destroy. |
 
 Not created: the input bucket (only referenced), the ECR repositories (`scripts/push-images.sh`, without
 `internet_access`), the state bucket
@@ -178,6 +179,11 @@ on the documents. At minimum:
 - S3: on the state bucket only, `s3:ListBucket`, and `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on the state
   key and its `.tflock` object. With `create_output_bucket`, creating and configuring that bucket.
 - KMS: with `secrets_kms_key_arn`, `kms:DescribeKey` and `kms:CreateGrant` on it.
+- Secrets Manager: with `pseudonymization_secret_arn`, `secretsmanager:DescribeSecret` on it (for its KMS key; never
+  its value). With `create_pseudonymization_secret`, `secretsmanager:CreateSecret`, `TagResource`, `PutSecretValue`,
+  `DescribeSecret`, `GetResourcePolicy`, and `GetSecretValue` on `<name>-pseudonymization-*` (the AWS provider
+  refreshes the secret's version with `GetSecretValue`; the value is not kept in the state), and
+  `kms:GenerateDataKey` and `kms:Decrypt` on `pseudonymization_secret_kms_key_arn` if set.
 - STS: `sts:GetCallerIdentity`.
 
 No read on the input bucket: Terraform only names it. Add an explicit deny to the operator's role so nothing else
@@ -243,6 +249,10 @@ the philter-batch image is published, `image_digests["philter-batch"]`.
 | `output_bucket`, `output_prefix` | required, `philter-batch/` | Where runs write. Must not overlap the input. |
 | `output_kms_key_arns` | `[]` | SSE-KMS keys of the output. |
 | `create_output_bucket` | `false` | Create the output bucket (versioned, encrypted, kept on destroy). |
+| `pseudonymization_secret_arn` | null | An existing Secrets Manager secret in this account and region that keys `FPE_ENCRYPT_REPLACE` and `CRYPTO_REPLACE` ([configuration](configuration.md#pseudonymization-secret)). The workers' role gets `secretsmanager:GetSecretValue` on this ARN only and, if the secret has a customer managed key, `kms:Decrypt` on it through Secrets Manager for this secret only. Terraform never reads or changes the value and never deletes the secret. |
+| `create_pseudonymization_secret` | `false` | Create the secret instead (see [What it creates](#what-it-creates-and-what-it-does-not)). Setting it and `pseudonymization_secret_arn` is refused; setting neither leaves the feature off, and keyed policies are refused. |
+| `pseudonymization_secret_kms_key_arn` | null | A customer managed key for a created secret. Null: Secrets Manager's AWS managed key. |
+| `console_reads_pseudonymization_secret` | `false` | Give the console's role the same read, so `fpe-key` works in the console. Anyone who can run commands in the console can then reverse the runs' FPE values. |
 | `internet_access` | `false` | Outbound internet through a NAT gateway, and images from their public registries. See [Internet access](#internet-access). |
 | `create_vpc` | `true` | Otherwise `vpc_id`, `subnet_ids` (two zones or more), `route_table_ids`. |
 | `vpc_cidr`, `availability_zone_count` | `10.80.0.0/16`, `2` | |
@@ -316,11 +326,21 @@ terraform destroy
   terraform state rm 'module.output_bucket[0]'
   ```
 
+- **A created pseudonymization secret** is refused the same way. Remove it from the state first, which leaves it, and
+  every run's keys, in place:
+
+  ```sh
+  terraform state rm 'module.pseudonymization_secret[0]'
+  ```
+
+  Delete it only when no run's FPE or `CRYPTO_REPLACE` values will need reversing and no run will resume: deleting it
+  makes them irreversible ([configuration](configuration.md#pseudonymization-secret)). An existing secret given by
+  `pseudonymization_secret_arn` is never deleted by the stack.
 - **Order.** The Helm releases are removed first, while the nodes, endpoints, and access host still exist; then the
   node groups and the cluster; then the network. Before the subnets are deleted, `scripts/cleanup-cni-enis.sh`
   deletes network interfaces the VPC CNI left behind (status `available`, tagged
   `node.k8s.amazonaws.com/instance_id`). The cluster's own security group is deleted by EKS with the cluster.
-- **Kept:** the input and output buckets, the state bucket, and the ECR repositories, if any (delete those with
+- **Kept:** the input and output buckets, the pseudonymization secret, the state bucket, and the ECR repositories, if any (delete those with
   `aws ecr delete-repository --force` at the end of the engagement). The NAT gateway and its Elastic IP are
   destroyed with the stack.
 

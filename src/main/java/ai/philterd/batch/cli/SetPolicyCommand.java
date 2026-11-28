@@ -7,7 +7,9 @@ import ai.philterd.batch.ExitCodes;
 import ai.philterd.batch.config.ConfigException;
 import ai.philterd.batch.config.Deployment;
 import ai.philterd.batch.config.RunConfig;
+import ai.philterd.batch.keys.RunKeys;
 import ai.philterd.batch.redaction.LoadedPolicy;
+import ai.philterd.batch.run.Formats.PolicyWarning;
 import ai.philterd.batch.run.RunLayout;
 import ai.philterd.batch.store.ObjectStore;
 import picocli.CommandLine.Command;
@@ -20,7 +22,8 @@ import java.util.concurrent.Callable;
 
 @Command(name = "set-policy", mixinStandardHelpOptions = true,
         description = {"Store a configured run's Phileas policy in the deployment's bucket.",
-                "Checks first that it loads with the models in this image. It can be replaced until the run starts.",
+                "Checks first that it loads with the models in this image, and names the strategies a reviewer should",
+                "know about. A policy may not hold a key. It can be replaced until the run starts.",
                 "Example: kubectl exec -i <console> -- philter-batch set-policy <run_id> --stdin < policy.json"})
 public class SetPolicyCommand implements Callable<Integer> {
 
@@ -43,6 +46,7 @@ public class SetPolicyCommand implements Callable<Integer> {
         try (ObjectStore store = console.store(d)) {
             final RunConfig config = Common.stored(store, d, runId);
             final LoadedPolicy policy = LoadedPolicy.load(json, Path.of(config.modelsDirectory()));
+            RunKeys.requireSecret(config, policy);
             final RunLayout layout = new RunLayout(config);
             if (store.get(layout.bucket(), layout.settings()).isPresent()) {
                 throw new ConfigException("Run " + runId + " has started, so its policy is fixed. Use a new run_id for "
@@ -51,6 +55,13 @@ public class SetPolicyCommand implements Callable<Integer> {
             store.put(layout.bucket(), layout.storedPolicy(), json, "application/json");
             Console.out.println("Stored the policy of run " + runId + " (sha256:" + policy.sha256() + ", "
                     + policy.models().size() + " model(s)): " + Console.uri(d, layout.storedPolicy()));
+            for (final PolicyWarning w : policy.strategies().warnings()) {
+                Console.out.println("Warning: " + w.where() + " uses " + w.strategy() + ". " + w.message());
+            }
+            if (policy.strategies().needsKey()) {
+                Console.out.println("Keyed from the pseudonymization secret " + config.pseudonymization().secretArn()
+                        + ": " + String.join(", ", policy.strategies().keyed()) + ".");
+            }
             final String check = WorkerFactory.leftoverCheck(policy);
             if (!"off".equals(check)) {
                 Console.out.println("Note: the policy's leftover check (" + check + ") is ignored: Philter Batch does "

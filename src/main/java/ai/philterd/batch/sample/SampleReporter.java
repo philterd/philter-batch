@@ -8,7 +8,11 @@ import ai.philterd.batch.config.RunConfig;
 import ai.philterd.batch.inventory.Inventory;
 import ai.philterd.batch.run.DocumentType;
 import ai.philterd.batch.run.FormatException;
+import ai.philterd.batch.redaction.PolicyStrategies;
 import ai.philterd.batch.run.Formats;
+import ai.philterd.batch.run.Formats.PolicyWarning;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 import ai.philterd.batch.run.Formats.DocumentResult;
 import ai.philterd.batch.run.Formats.DoneMarker;
 import ai.philterd.batch.run.Formats.Estimate;
@@ -239,7 +243,17 @@ public final class SampleReporter {
                 first == null ? null : first.policySha256(), first == null ? null : first.phileasVersion(),
                 first == null ? null : first.pheyeOnnxVersion(), first == null ? List.of() : first.models(),
                 config.output().mode().json(), Inventory.sampleSeed(config), sampled.size(), documents.size(), bytes,
-                byExtension, byStatus, byReason, pii, leftover, checked, throughput, estimate, entries);
+                byExtension, byStatus, byReason, pii, leftover, checked, throughput, estimate, entries,
+                policyWarnings());
+    }
+
+    /** The policy's strategies a reviewer should know about, from the policy stored with the run. */
+    private List<PolicyWarning> policyWarnings() {
+        return store.get(layout.bucket(), layout.policy()).map(o -> {
+            final JsonElement policy = JsonParser.parseString(new String(o.data(), StandardCharsets.UTF_8));
+            return policy.isJsonObject() ? PolicyStrategies.of(policy.getAsJsonObject()).warnings()
+                    : List.<PolicyWarning>of();
+        }).orElse(List.of());
     }
 
 }

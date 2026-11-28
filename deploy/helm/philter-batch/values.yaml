@@ -23,6 +23,13 @@ output:
   bucket: ""                # required
   prefix: philter-batch/
 
+# The AWS Secrets Manager secret that keys FPE_ENCRYPT_REPLACE and CRYPTO_REPLACE (docs/configuration.md). The chart
+# holds only its ARN: each pod reads the value with its own IAM role, and the value is never in a Kubernetes object.
+# Empty: a policy using those strategies is refused.
+pseudonymization:
+  secretArn: ""             # for example arn:aws:secretsmanager:us-east-1:111122223333:secret:philter-batch-AbCdEf
+  endpoint: ""              # a Secrets Manager endpoint instead of AWS's, for testing
+
 # The service account of the workflow's pods: read on the input, write under the output prefix.
 serviceAccount:
   create: true
@@ -141,6 +148,13 @@ networkPolicy:
   # The object store. Required when enabled. For S3 through a gateway endpoint, the CIDRs of the region's S3
   # prefix list; for an in-cluster store, a namespaceSelector and podSelector.
   objectStore:
+    to: []
+    ports:
+      - port: 443
+        protocol: TCP
+  # Secrets Manager, when pseudonymization.secretArn is set; required then. For its interface endpoint, the CIDRs of
+  # the subnets the endpoint is in.
+  secretsManager:
     to: []
     ports:
       - port: 443

@@ -4,6 +4,9 @@
 # - console: read and write under the output prefix (configure, set-policy, approve, reject, status,
 #   sample-report). Nothing on the input: an explicit deny keeps it so whatever else is attached.
 #
+# The workers may read the pseudonymization secret, when there is one: GetSecretValue on that ARN only, and Decrypt
+# on its customer managed key only through Secrets Manager and only for that secret. The console may too when asked.
+#
 # s3:ListBucket on the output bucket is not limited to the prefix: the store reads a missing object as a 404, which
 # S3 returns only to a caller with s3:ListBucket on the bucket, and takes the store's clock from HeadBucket, which
 # s3:ListBucket authorizes; neither request carries an s3:prefix for a condition to match.
@@ -31,6 +34,24 @@ locals {
     Action   = ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectAcl", "s3:PutObjectTagging", "s3:RestoreObject"]
     Resource = [local.input_objects]
   }
+
+  secret_read_statements = var.pseudonymization_secret_arn == null ? [] : [{
+    Sid      = "ReadPseudonymizationSecret"
+    Effect   = "Allow"
+    Action   = ["secretsmanager:GetSecretValue"]
+    Resource = [var.pseudonymization_secret_arn]
+  }]
+  secret_kms_statements = var.pseudonymization_secret_arn == null || var.pseudonymization_kms_key_arn == null ? [] : [{
+    Sid      = "DecryptPseudonymizationSecret"
+    Effect   = "Allow"
+    Action   = ["kms:Decrypt"]
+    Resource = [var.pseudonymization_kms_key_arn]
+    Condition = { StringEquals = {
+      "kms:ViaService"                  = "secretsmanager.${var.region}.amazonaws.com"
+      "kms:EncryptionContext:SecretARN" = var.pseudonymization_secret_arn
+    } }
+  }]
+  console_secret = var.console_reads_pseudonymization_secret
 
   workers_policy = {
     Version = "2012-10-17"
@@ -67,7 +88,7 @@ locals {
         Action    = ["kms:Decrypt"]
         Resource  = var.input_kms_key_arns
         Condition = local.kms_condition
-    }], local.output_kms_statements)
+    }], local.output_kms_statements, local.secret_read_statements, local.secret_kms_statements)
   }
 
   console_policy = {
@@ -91,7 +112,9 @@ locals {
         Action   = ["s3:*"]
         Resource = [local.input_objects]
       },
-    ], local.output_kms_statements)
+      ], local.output_kms_statements,
+      local.console_secret ? local.secret_read_statements : [],
+    local.console_secret ? local.secret_kms_statements : [])
   }
 }
 

@@ -1,6 +1,6 @@
 # A run's configuration. Every setting below run_id, input, output, and policy shows its default. For the console's
-# configure, leave out store, output.bucket, output.prefix, policy, and worker.threads, onnx_threads, and
-# shutdown_grace_seconds: the deployment sets them (docs/configuration.md).
+# configure, leave out store, output.bucket, output.prefix, pseudonymization, policy, and worker.threads,
+# onnx_threads, and shutdown_grace_seconds: the deployment sets them (docs/configuration.md).
 run_id: pilot-2026-11
 
 store:
@@ -70,3 +70,8 @@ release_gate:
 # gate refuses a plain approval (approve --accept-quarantine), and without a release gate finalize exits 6.
 quarantine:
   max_percent: 5
+
+# The Secrets Manager secret that keys FPE_ENCRYPT_REPLACE and CRYPTO_REPLACE. None by default: a policy using them
+# is refused. See docs/configuration.md#pseudonymization-secret.
+# pseudonymization:
+#   secret_arn: arn:aws:secretsmanager:us-east-1:111122223333:secret:philter-batch-AbCdEf

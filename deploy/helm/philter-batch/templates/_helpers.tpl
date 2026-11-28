@@ -91,6 +91,17 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- if empty .Values.networkPolicy.objectStore.to -}}
 {{- fail "networkPolicy.objectStore.to is required when the network policy is enabled (see docs/kubernetes.md)" -}}
 {{- end -}}
+{{- if and .Values.pseudonymization.secretArn (empty .Values.networkPolicy.secretsManager.to) -}}
+{{- fail "networkPolicy.secretsManager.to is required when the network policy is enabled and pseudonymization.secretArn is set (see docs/kubernetes.md)" -}}
+{{- end -}}
+{{- end -}}
+{{- with .Values.pseudonymization.secretArn -}}
+{{- if not (regexMatch "^arn:aws[a-z-]*:secretsmanager:[a-z]{2}(-[a-z]+)+-[0-9]:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$" .) -}}
+{{- fail "pseudonymization.secretArn must be a Secrets Manager secret's full ARN, ending in the six characters AWS adds to its name" -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.pseudonymization.endpoint (not .Values.pseudonymization.secretArn) -}}
+{{- fail "pseudonymization.endpoint is set without pseudonymization.secretArn" -}}
 {{- end -}}
 {{- end -}}
 
@@ -99,7 +110,13 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- $store := dict "type" .Values.store.type "path_style" (.Values.store.path_style | default false) -}}
 {{- with .Values.store.region }}{{ $_ := set $store "region" . }}{{ end -}}
 {{- with .Values.store.endpoint }}{{ $_ := set $store "endpoint" . }}{{ end -}}
-{{- toYaml (dict "store" $store "output" (dict "bucket" .Values.output.bucket "prefix" (.Values.output.prefix | default ""))) -}}
+{{- $deployment := dict "store" $store "output" (dict "bucket" .Values.output.bucket "prefix" (.Values.output.prefix | default "")) -}}
+{{- with .Values.pseudonymization.secretArn -}}
+{{- $p := dict "secret_arn" . -}}
+{{- with $.Values.pseudonymization.endpoint }}{{ $_ := set $p "endpoint" . }}{{ end -}}
+{{- $_ := set $deployment "pseudonymization" $p -}}
+{{- end -}}
+{{- toYaml $deployment -}}
 {{- end -}}
 
 {{/* The environment every philter-batch container gets. */}}

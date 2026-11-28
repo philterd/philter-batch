@@ -77,7 +77,8 @@ jobs:
 
     - name: Render the chart
       run: |
-        for values in "" "--set console.enabled=false" "--set networkPolicy.enabled=false"; do
+        for values in "" "--set console.enabled=false" "--set networkPolicy.enabled=false" \
+            "-f deploy/helm/philter-batch/ci/pseudonymization-values.yaml"; do
           helm template ci deploy/helm/philter-batch -f deploy/helm/philter-batch/ci/test-values.yaml $values > /dev/null
         done
 
@@ -91,8 +92,8 @@ jobs:
       run: shellcheck scripts/*.sh deploy/terraform/aws/scripts/*.sh
 
   # Checks the AWS Terraform offline: formatting, validation, the mocked tests (terraform test plans the stack against
-  # mocked AWS and Helm providers), tflint with the AWS ruleset, and Trivy's configuration scan. No AWS credentials:
-  # nothing is planned or applied against an account.
+  # mocked AWS and Helm providers; the random provider runs for real, locally), tflint with the AWS ruleset, and
+  # Trivy's configuration scan. No AWS credentials: nothing is planned or applied against an account.
   terraform:
     runs-on: ubuntu-latest
     defaults:
@@ -125,6 +126,8 @@ jobs:
     - name: Test with mocked providers
       run: |
         terraform test
+        terraform init -backend=false -input=false -test-directory=tests/pseudonymization_secret
+        terraform test -test-directory=tests/pseudonymization_secret
         scripts/test-prevent-destroy.sh
 
     - name: Install tflint and Trivy

@@ -3,11 +3,13 @@
  */
 package ai.philterd.batch.redaction;
 
+import ai.philterd.batch.keys.RunKeys;
 import ai.philterd.batch.run.Formats.ModelInfo;
 import ai.philterd.batch.run.Hashes;
 import ai.philterd.phileas.PhileasConfiguration;
 import ai.philterd.phileas.policy.Identifiers;
 import ai.philterd.phileas.policy.Policy;
+import ai.philterd.phileas.policy.PolicyEnvironment;
 import ai.philterd.phileas.policy.filters.PhEye;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
@@ -28,8 +30,17 @@ import java.util.regex.Pattern;
  * A Phileas policy, parsed, with each PhEye {@code modelPath} that names a model resolved to that model's directory
  * under the models directory. Every PhEye filter must name a local model: Philter Batch runs models in-process and
  * calls no PhEye service.
+ *
+ * <p>A policy may not hold a key ({@code fpe} or {@code crypto}): keys are set on the loaded policy from the run's
+ * pseudonymization secret ({@link #applyKeys(RunKeys)}), so the stored policy never holds one. And a policy may not
+ * name an environment variable ({@code env:NAME} or {@code ${NAME}}): Phileas's {@link PolicyEnvironment} is
+ * restricted to none before any policy is read.
  */
 public final class LoadedPolicy {
+
+    static {
+        PolicyEnvironment.restrictTo(List.of());
+    }
 
     /** A model name: letters, digits, dots, underscores, and hyphens, starting with a letter or digit. */
     static final Pattern MODEL_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
@@ -37,11 +48,15 @@ public final class LoadedPolicy {
     private final Policy policy;
     private final String sha256;
     private final List<Path> modelDirectories;
+    private final PolicyStrategies strategies;
+    private volatile boolean keyed;
 
-    private LoadedPolicy(final Policy policy, final String sha256, final List<Path> modelDirectories) {
+    private LoadedPolicy(final Policy policy, final String sha256, final List<Path> modelDirectories,
+                         final PolicyStrategies strategies) {
         this.policy = policy;
         this.sha256 = sha256;
         this.modelDirectories = List.copyOf(modelDirectories);
+        this.strategies = strategies;
     }
 
     public static LoadedPolicy load(final byte[] json, final Path modelsDirectory) {
@@ -54,6 +69,8 @@ public final class LoadedPolicy {
         if (!element.isJsonObject() || !element.getAsJsonObject().has("identifiers")) {
             throw new PolicyException("The policy must be a JSON object with an identifiers object.");
         }
+        PolicyStrategies.refuseKeys(element.getAsJsonObject());
+        final PolicyStrategies strategies = PolicyStrategies.of(element.getAsJsonObject());
         final Policy policy;
         try {
             policy = new Gson().fromJson(element, Policy.class);
@@ -84,7 +101,7 @@ public final class LoadedPolicy {
                 models.add(model);
             }
         }
-        return new LoadedPolicy(policy, Hashes.sha256(json), models);
+        return new LoadedPolicy(policy, Hashes.sha256(json), models, strategies);
     }
 
     /** A model name resolves under the models directory; a path is used as given. Either must be a complete model. */
@@ -116,6 +133,23 @@ public final class LoadedPolicy {
 
     public String sha256() {
         return sha256;
+    }
+
+    /** What the policy's strategies need and risk. */
+    public PolicyStrategies strategies() {
+        return strategies;
+    }
+
+    /** Sets the run's keys on the loaded policy, in memory only. */
+    public void applyKeys(final RunKeys keys) {
+        policy.setFpe(keys.fpe());
+        policy.setCrypto(keys.crypto());
+        keyed = true;
+    }
+
+    /** Whether the policy can be redacted with: it needs no key, or its keys are set. */
+    public boolean ready() {
+        return keyed || !strategies.needsKey();
     }
 
     /** The models the policy runs, with the SHA-256 of each ONNX file. */

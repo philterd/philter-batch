@@ -56,9 +56,10 @@ What is not in a record:
 - No record for a quarantined or empty input. Its status and reason code are in the done markers, the manifest,
   and `report.json`.
 
-Whether a value gets the same replacement each time depends on the policy's strategies. Each record is redacted
-with its own Phileas context, so a strategy with `replacementScope: CONTEXT` is consistent within one record and
-not across records or segments.
+Whether a value gets the same replacement each time depends on the policy's strategies. `RANDOM_REPLACE` and a
+random `SHIFT` are consistent within one record, with either `replacementScope`, and not across records or segments.
+`FPE_ENCRYPT_REPLACE` is consistent across records and runs keyed from the same secret version. See
+[Consistency of replacements](configuration.md#consistency-of-replacements).
 
 Redaction is probabilistic: a record can still contain sensitive values the policy did not detect. Validate
 output against your own data before use.

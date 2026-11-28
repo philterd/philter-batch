@@ -52,6 +52,9 @@ public final class PhileasRedactor implements TextRedactor {
     private final Map<DocumentType, BinaryFilterService> services = new EnumMap<>(DocumentType.class);
 
     public PhileasRedactor(final LoadedPolicy policy, final PhileasConfiguration configuration) throws Exception {
+        if (!policy.ready()) {
+            throw new IllegalStateException("The policy needs a key from the pseudonymization secret, and none is set.");
+        }
         // The leftover check is off for now: with mode always, Phileas would run it without being asked.
         final var config = policy.policy().getConfig();
         if (config != null && config.getReview() != null && config.getReview().getLeftoverCheck() != null) {

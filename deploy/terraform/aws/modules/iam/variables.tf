@@ -65,3 +65,21 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "pseudonymization_secret_arn" {
+  description = "The pseudonymization secret the workers may read. Null: none."
+  type        = string
+  default     = null
+}
+
+variable "pseudonymization_kms_key_arn" {
+  description = "The secret's customer managed KMS key, for kms:Decrypt through Secrets Manager. Null: the AWS managed key, which needs no grant."
+  type        = string
+  default     = null
+}
+
+variable "console_reads_pseudonymization_secret" {
+  description = "Let the console read the secret too, for fpe-key."
+  type        = bool
+  default     = false
+}

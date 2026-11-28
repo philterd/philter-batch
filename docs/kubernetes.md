@@ -134,7 +134,10 @@ CI="kubectl exec -i -n philter-batch philter-batch-console-0 --"
 1. **Configure the run.** `run.yaml` ([configuration](configuration.md)) names the run, its input, and its
    output mode. Leave out `store`, `output.bucket`, and `output.prefix` (the deployment sets them), and `policy`,
    `worker.threads`, `worker.onnx_threads`, and `worker.shutdown_grace_seconds` (the chart's `workers` values set
-   them). Both are checked before anything is stored, and can be replaced until the run starts.
+   them). Both are checked before anything is stored, and can be replaced until the run starts. `set-policy`
+   refuses a policy holding a key, refuses `FPE_ENCRYPT_REPLACE` and `CRYPTO_REPLACE` when the deployment has no
+   pseudonymization secret, and prints a warning for `CRYPTO_REPLACE`, unsalted `HASH_SHA256_REPLACE`, and
+   `LAST_4` ([strategies and keys](configuration.md#strategies-and-keys)).
 
    ```sh
    $CI philter-batch configure --stdin < run.yaml
@@ -156,8 +159,8 @@ CI="kubectl exec -i -n philter-batch philter-batch-console-0 --"
    $C philter-batch sample-report pilot-2026-11 > sample-report.html
    ```
 
-   It shows each sampled entry's redacted text with the replacements highlighted by type, counts by type,
-   quarantines by reason, the measured throughput, and the estimated time of the rest for `workers.count` pods
+   It shows each sampled entry's redacted text with the replacements highlighted by type, the policy's warnings,
+   counts by type, quarantines by reason, the measured throughput, and the estimated time of the rest for `workers.count` pods
    (and its cost, when the run sets `sample.price_per_worker_hour`). It holds redacted text only, never an original
    value or an input key. Do not use `kubectl exec -t`: a terminal changes the line endings.
 
@@ -236,7 +239,7 @@ be repeated. `status` says when no workflow is running a run that has not ended.
 ## Network policy
 
 The chart denies all ingress and egress in the namespace, then lets the run's pods and the console reach DNS, the
-Kubernetes API, and the object store. It is enforced only by a CNI that implements NetworkPolicy. Both destinations
+Kubernetes API, the object store, and, with a pseudonymization secret, Secrets Manager. It is enforced only by a CNI that implements NetworkPolicy. Both destinations
 are per-cluster and required:
 
 - `networkPolicy.kubernetesApi.to`: the API server's endpoint addresses, which Argo's wait container in each pod
@@ -247,8 +250,11 @@ are per-cluster and required:
   S3 prefix list (`aws ec2 describe-managed-prefix-lists`); for another S3-compatible store, its addresses, or a
   `namespaceSelector` and `podSelector` if it runs in the cluster.
 
+With a pseudonymization secret (`pseudonymization.secretArn`), `networkPolicy.secretsManager.to` is required too:
+the addresses of the VPC's `secretsmanager` interface endpoint, such as the VPC's CIDR.
+
 With EKS Pod Identity, pods get credentials from the agent on each node at `169.254.170.23`, port 80: add it to
-`networkPolicy.extraEgress`. The AWS Terraform sets all three.
+`networkPolicy.extraEgress`. The AWS Terraform sets all of these.
 
 Standard NetworkPolicy matches addresses, not host names. A rule by host name (`s3.us-east-1.amazonaws.com`)
 needs a CNI with its own policy type, such as Cilium's `CiliumNetworkPolicy` with `toFQDNs`; disable the chart's
@@ -287,6 +293,8 @@ because Argo's executor does not read it from the image.
 | `output.prefix` | `philter-batch/` | Each run writes under `<prefix>runs/<run_id>/`. |
 | `serviceAccount.create`, `name`, `annotations` | `true`, the release's full name, `{}` | The workflow's pods. |
 | `credentialsSecret` | none | A Secret with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, when workload identity is not used. |
+| `pseudonymization.secretArn` | none | The Secrets Manager secret that keys `FPE_ENCRYPT_REPLACE` and `CRYPTO_REPLACE`, by full ARN ([configuration](configuration.md#pseudonymization-secret)). The chart holds only the ARN; the workflow's service account needs `secretsmanager:GetSecretValue` on it. |
+| `pseudonymization.endpoint` | AWS | A Secrets Manager endpoint instead of AWS's, for testing. |
 | `console.enabled` | `true` | |
 | `console.serviceAccount.create`, `name`, `annotations` | `true`, `<full name>-console`, `{}` | The console. |
 | `console.cpu`, `memory` | `1`, `1Gi` | |
@@ -316,4 +324,5 @@ because Argo's executor does not read it from the image.
 | `networkPolicy.dns` | `kube-dns` in `kube-system` | |
 | `networkPolicy.kubernetesApi.to`, `ports` | none, `443/TCP` | Required when enabled. |
 | `networkPolicy.objectStore.to`, `ports` | none, `443/TCP` | Required when enabled. |
+| `networkPolicy.secretsManager.to`, `ports` | none, `443/TCP` | Required when enabled with `pseudonymization.secretArn`. |
 | `networkPolicy.extraEgress` | `[]` | Further egress rules. |

@@ -69,6 +69,36 @@ variable "create_output_bucket" {
   default     = false
 }
 
+# --- Pseudonymization secret ----------------------------------------------------------------------------------------
+
+variable "pseudonymization_secret_arn" {
+  description = "An existing Secrets Manager secret, in this account and region, that keys FPE_ENCRYPT_REPLACE and CRYPTO_REPLACE: one random value of at least 32 bytes (docs/configuration.md). The workers may read it (secretsmanager:GetSecretValue on this ARN only, and kms:Decrypt on its customer managed key through Secrets Manager, if it has one). Terraform never reads or changes its value and never deletes it. Null, with create_pseudonymization_secret false: policies using those strategies are refused."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.pseudonymization_secret_arn == null || can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z]{2}(-[a-z]+)+-[0-9]:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$", var.pseudonymization_secret_arn))
+    error_message = "pseudonymization_secret_arn must be a secret's full ARN, ending in the six characters Secrets Manager adds to its name."
+  }
+}
+
+variable "create_pseudonymization_secret" {
+  description = "Create the pseudonymization secret, with a random value that is in neither the plan nor the state (written through secret_string_wo). It is kept on destroy (prevent_destroy); see docs/aws.md. Cannot be combined with pseudonymization_secret_arn."
+  type        = bool
+  default     = false
+}
+
+variable "pseudonymization_secret_kms_key_arn" {
+  description = "A customer managed KMS key to encrypt a created pseudonymization secret with. Null: Secrets Manager's AWS managed key. For an existing secret, its own key is used, as Secrets Manager reports it."
+  type        = string
+  default     = null
+}
+
+variable "console_reads_pseudonymization_secret" {
+  description = "Let the console read the pseudonymization secret too, so an operator can run fpe-key in it. Anyone who can run commands in the console can then reverse the runs' FPE values. False: only the workflow's pods read it, and fpe-key runs elsewhere with the operator's own credentials."
+  type        = bool
+  default     = false
+}
+
 # --- Network -------------------------------------------------------------------------------------------------------
 
 variable "internet_access" {

@@ -3,6 +3,7 @@
  */
 package ai.philterd.batch.sample;
 
+import ai.philterd.batch.run.Formats;
 import ai.philterd.batch.run.Formats.Estimate;
 import ai.philterd.batch.run.Formats.ModelInfo;
 import ai.philterd.batch.run.Formats.Replacement;
@@ -66,6 +67,16 @@ public final class HtmlSampleReport {
         row(h, "Sampled", number(report.entries()) + " entries of " + number(report.documents()) + " documents, "
                 + bytes(report.bytes()) + " (seed " + report.seed() + ")");
         h.append("</table>\n");
+
+        if (report.policyWarnings() != null && !report.policyWarnings().isEmpty()) {
+            h.append("<h2>Policy warnings</h2>\n<p>The policy uses strategies that weaken the output. They are not "
+                    + "refused; check that each is intended.</p>\n<ul class=\"warnings\">\n");
+            for (final Formats.PolicyWarning w : report.policyWarnings()) {
+                h.append("<li><b>").append(esc(w.strategy())).append("</b> at <code>").append(esc(w.where()))
+                        .append("</code>: ").append(esc(w.message())).append("</li>\n");
+            }
+            h.append("</ul>\n");
+        }
 
         h.append("<h2>Decision</h2>\n<p>Approve the sample to start the rest of the run, or reject it to end the run. "
                 + "A run is tied to its policy: to change the policy, reject this run and start a new one.</p>\n<pre class=\"cmd\">")
@@ -209,7 +220,7 @@ public final class HtmlSampleReport {
                 th{font-weight:600;color:#555}td.n{text-align:right;font-variant-numeric:tabular-nums}
                 .grid{display:flex;flex-wrap:wrap;gap:8px 40px}
                 .notice{background:#fff4e5;border-left:4px solid #e08e0b;padding:8px 12px}
-                .small,.meta{color:#555;font-size:13px}.none{color:#777;font-style:italic}
+                .small,.meta{color:#555;font-size:13px}.none{color:#777;font-style:italic}.warnings li{margin:4px 0}
                 pre{white-space:pre-wrap;word-wrap:break-word;background:#f7f7f8;border:1px solid #e3e3e6;padding:12px;
                 font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;max-height:480px;overflow:auto}
                 pre.cmd{max-height:none}

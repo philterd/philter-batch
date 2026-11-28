@@ -43,6 +43,94 @@ input and read, write, and delete access under the output prefix.
 | `models_directory` | `/opt/philter-batch/models` | Where PhEye models are. A policy's `phEyeConfiguration.modelPath` that is a bare name (such as `ph-eye-pii-en-small`) is a subdirectory here. Every PhEye filter must name a local model: Philter Batch runs models in-process and calls no PhEye service. |
 | `policy_files_directories` | none | Directories a policy may read files from (dictionaries, ignore lists). A policy naming a file elsewhere is refused. |
 
+## Strategies and keys
+
+Philter Batch runs any strategy Phileas accepts. Two need a key, and three weaken the output in a way the sample's
+reviewer should see:
+
+| Strategies | In Philter Batch |
+| --- | --- |
+| `REDACT`, `MASK`, `STATIC_REPLACE`, `TRUNCATE`, `TRUNCATE_TO_YEAR`, `ABBREVIATE`, `MAP_REPLACE`, `RANDOM_REPLACE`, `SHIFT` | Run as in Phileas. |
+| `FPE_ENCRYPT_REPLACE`, `CRYPTO_REPLACE` | Keyed from the [pseudonymization secret](#pseudonymization-secret). A policy may not hold their key. |
+| `CRYPTO_REPLACE`, `HASH_SHA256_REPLACE` without `salt`, `LAST_4` | Warned about by `set-policy`, the inventory's log, and the sample report. Not refused. |
+
+The warnings:
+
+- `CRYPTO_REPLACE` encrypts each value with AES-GCM and a random nonce: anyone with the key can recover the
+  original, the same value gets a different replacement each time, and Philter Batch has no re-identify endpoint.
+- `HASH_SHA256_REPLACE` without `salt: true` can be reversed by guessing: hashing a guessed value confirms it.
+- `LAST_4` keeps the last four characters of each value.
+
+### Consistency of replacements
+
+Matching is on the exact string, so `Avery Example` and `A. Example` get different replacements.
+
+- `RANDOM_REPLACE`, a `MAP_REPLACE` generator, and a random `SHIFT` give every occurrence of a value in one
+  document the same replacement, with either `replacementScope` (`DOCUMENT`, the default, or `CONTEXT`), and a
+  random `SHIFT` moves every date in the document by the same number of days. Each document gets its own
+  replacements: Philter Batch gives each document its own context, so `CONTEXT` does not carry from one document
+  to the next. A large plain-text file split into segments is redacted segment by segment, so each segment is a
+  document here.
+- `FPE_ENCRYPT_REPLACE` gives a value the same replacement in every document, on every worker, and in every run
+  keyed from the same secret version, and no two values share one, with nothing stored per value. It fits
+  identifiers such as SSNs and phone and account numbers. A value whose format-preserved content is outside 6 to 56
+  characters, FF3-1's range in Phileas, is redacted instead.
+  Runs keyed from different secrets, or different versions of one, give different replacements.
+- `CRYPTO_REPLACE` gives a different replacement each time, even within one document.
+
+### Pseudonymization secret
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `pseudonymization.secret_arn` | none | The AWS Secrets Manager secret the keys come from, by its full ARN. Without it, a policy using `FPE_ENCRYPT_REPLACE` or `CRYPTO_REPLACE` is refused. In a deployment the chart sets it (`pseudonymization.secretArn`). |
+| `pseudonymization.endpoint` | AWS | A Secrets Manager endpoint instead of AWS's, for testing. |
+
+The secret holds one random value of at least 32 bytes: its binary value, or its string's UTF-8 bytes. The Terraform
+can create one (`create_pseudonymization_secret`, see [AWS](aws.md#variables)); to make one yourself, store a random
+value such as `openssl rand -base64 48`. Turn off automatic rotation: a new version gives later runs other keys, and
+Philter Batch has no rotation function.
+
+Philter Batch derives each key from the value with HKDF-SHA256 (RFC 5869), with no salt and one `info` label per
+use, so a secret version always gives the same keys:
+
+| Label | Bytes | Use |
+| --- | --- | --- |
+| `philter-batch/v1/fpe-key` | 32 | The FF3-1 key of `FPE_ENCRYPT_REPLACE` (AES-256). |
+| `philter-batch/v1/fpe-tweak` | 7 | The FF3-1 tweak. |
+| `philter-batch/v1/crypto-key` | 32 | The AES-256 key of `CRYPTO_REPLACE`. |
+| `philter-batch/v1/fingerprint` | 32 | Recorded in `run.json` to check the key with. It reveals neither the value nor a key. |
+
+How the key is handled:
+
+- **Never in the policy.** A policy with an `fpe` or `crypto` block holding a key, tweak, or IV, whether literal,
+  `env:NAME`, or `${NAME}`, is refused, so the stored `policy.json` never holds a key. Leave both blocks out.
+  A policy may not name an environment variable at all: Phileas's policy environment is restricted to none.
+- **Read once per process.** Each process that redacts (the sample, each worker, `run`) and the inventory calls
+  `GetSecretValue` once, with the pod's IAM role, holds the value in memory, and sets the keys on the loaded
+  policy. Requests grow with process starts, not with the number of documents. A policy without a keyed strategy
+  reads no secret.
+- **Pinned per run.** The inventory records the secret's ARN, the `VersionId` it read (the current one), and the
+  fingerprint in `run.json`. Every later process of the run, a resumed one included, reads that version and checks
+  the fingerprint, and stops before writing output if the deployment names another secret, the version cannot be
+  read, or its value gives another fingerprint. A rotation during a run therefore cannot mix two keys, and a run
+  whose version was deleted cannot resume.
+- **Nowhere else.** The key and the value are not written to the bucket, logs, reports, `run.json`, the output,
+  environment variables, or Kubernetes objects. The chart holds only the ARN.
+
+To reverse a run's FPE values elsewhere, such as with Phileas or Philter, `fpe-key` prints the run's FPE key and
+tweak as a policy's `fpe` block, to standard output only:
+
+```sh
+philter-batch fpe-key <run_id>        # in a deployment; or: philter-batch fpe-key -c run.yaml
+```
+
+It uses the version the run pinned, or the current version before the run starts. Anyone holding its output can
+reverse the run's FPE values. In the EKS stack, the console's role reads the secret only with
+`console_reads_pseudonymization_secret`; otherwise run `fpe-key` with credentials that can.
+
+Deleting the secret (or the version a run pinned) makes that run's FPE and `CRYPTO_REPLACE` values irreversible,
+and the run cannot be resumed. Secrets Manager keeps a deleted secret for its recovery window (7 to 30 days) first.
+
 ## Plain text
 
 | Setting | Default | Meaning |
@@ -184,6 +272,7 @@ A run's configuration stored with `configure` differs from a local one in two wa
 
 - The deployment sets `store`, `output.bucket`, and `output.prefix`. Leave them out, or give the deployment's
   values; different values are refused.
+- The deployment sets `pseudonymization` too: leave it out, or give the deployment's value.
 - `policy`, `worker.threads`, `worker.onnx_threads`, and `worker.shutdown_grace_seconds` are refused: `set-policy`
   stores the policy, and the chart passes the worker settings to each pod (`--threads`, `--onnx-threads`, and
   `--shutdown-grace-seconds`, which also work locally and replace the file's).
@@ -196,6 +285,7 @@ The deployment file (`deployment.yaml`, written by the chart; named by `--deploy
 ```yaml
 store: {type: s3, region: us-east-1}
 output: {bucket: example-output-bucket, prefix: philter-batch/}
+pseudonymization: {secret_arn: "arn:aws:secretsmanager:us-east-1:111122223333:secret:philter-batch-AbCdEf"}
 ```
 
 ## Leftover check

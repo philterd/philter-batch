@@ -8,6 +8,7 @@ import ai.philterd.batch.config.RunConfig;
 import ai.philterd.batch.run.DocumentType;
 import ai.philterd.batch.run.Formats;
 import ai.philterd.batch.run.Formats.InventorySummary;
+import ai.philterd.batch.run.Formats.KeyPin;
 import ai.philterd.batch.run.Formats.RunSettings;
 import ai.philterd.batch.run.Formats.Shard;
 import ai.philterd.batch.run.Formats.ShardEntry;
@@ -60,6 +61,14 @@ public final class Inventory {
      * @param policyJson The policy file's bytes, stored with the run so every worker uses the same policy.
      */
     public InventorySummary run(final byte[] policyJson) {
+        return run(policyJson, null);
+    }
+
+    /**
+     * @param key The pseudonymization secret's version to pin in {@code run.json}, or null when the policy needs no
+     *            key.
+     */
+    public InventorySummary run(final byte[] policyJson, final KeyPin key) {
         final Optional<StoredObject> existing = store.get(layout.bucket(), layout.inventory());
         if (existing.isPresent()) {
             final InventorySummary summary = Json.read(existing.get().data(), InventorySummary.class);
@@ -70,7 +79,7 @@ public final class Inventory {
 
         final String policySha256 = Hashes.sha256(policyJson);
         putOnce(layout.policy(), policyJson, "application/json", "a different policy");
-        putOnce(layout.settings(), Json.write(settings(config, policySha256)), "application/json", null);
+        putOnce(layout.settings(), Json.write(settings(config, policySha256, key)), "application/json", null);
         final byte[] secret = idSecret();
 
         final Classifier classifier = new Classifier(config);
@@ -175,7 +184,7 @@ public final class Inventory {
     }
 
     /** The settings recorded with a run, which workers check their configuration against. */
-    public static RunSettings settings(final RunConfig config, final String policySha256) {
+    public static RunSettings settings(final RunConfig config, final String policySha256, final KeyPin key) {
         // Recorded only beyond plain text, so a plain-text run's run.json is what it was before other types.
         Map<String, List<String>> types = null;
         if (config.inputTypes().beyondPlainText() || !config.inputTypes().types().contains(DocumentType.TEXT)) {
@@ -185,7 +194,7 @@ public final class Inventory {
             }
         }
         return new RunSettings(Formats.FORMAT, config.runId(), config.output().mode().json(),
-                config.plainText().charsetValue().name(), config.plainText().extensions(), policySha256, types);
+                config.plainText().charsetValue().name(), config.plainText().extensions(), policySha256, types, key);
     }
 
     /** The entries for one file: the whole file, or segments of about {@code segmentBytes}. */

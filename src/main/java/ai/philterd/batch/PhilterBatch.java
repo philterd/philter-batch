@@ -8,6 +8,7 @@ import ai.philterd.batch.cli.CheckStoreCommand;
 import ai.philterd.batch.cli.ConfigureCommand;
 import ai.philterd.batch.cli.DecideCommand;
 import ai.philterd.batch.cli.FinalizeCommand;
+import ai.philterd.batch.cli.FpeKeyCommand;
 import ai.philterd.batch.cli.InventoryCommand;
 import ai.philterd.batch.cli.RunCommand;
 import ai.philterd.batch.cli.SampleCommand;
@@ -33,7 +34,8 @@ import picocli.CommandLine.Command;
 @Command(name = "philter-batch", mixinStandardHelpOptions = true, versionProvider = PhilterBatch.Version.class,
         description = "Batch redaction of documents in object storage with Phileas. Needs no Philter server.",
         subcommands = {ConfigureCommand.class, SetPolicyCommand.class, SubmitCommand.class, StatusCommand.class,
-                DecideCommand.Approve.class, DecideCommand.Reject.class, SampleReportCommand.class, CheckStoreCommand.class,
+                DecideCommand.Approve.class, DecideCommand.Reject.class, SampleReportCommand.class, FpeKeyCommand.class,
+                CheckStoreCommand.class,
                 InventoryCommand.class, SampleCommand.class, AwaitGateCommand.class, WorkCommand.class,
                 FinalizeCommand.class, RunCommand.class})
 public final class PhilterBatch {

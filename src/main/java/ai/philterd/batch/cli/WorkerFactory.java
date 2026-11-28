@@ -5,6 +5,7 @@ package ai.philterd.batch.cli;
 
 import ai.philterd.batch.config.ConfigException;
 import ai.philterd.batch.config.RunConfig;
+import ai.philterd.batch.keys.RunKeys;
 import ai.philterd.batch.redaction.LoadedPolicy;
 import ai.philterd.batch.redaction.PhileasRedactor;
 import ai.philterd.batch.run.Formats.RunSettings;
@@ -34,6 +35,14 @@ final class WorkerFactory {
         final LoadedPolicy policy = LoadedPolicy.load(policyJson, Path.of(config.modelsDirectory()));
         if (!policy.sha256().equals(settings.policySha256())) {
             throw new ConfigException("The run's stored policy does not match its recorded hash.");
+        }
+        if (policy.strategies().needsKey()) {
+            if (settings.key() == null) {
+                throw new ConfigException("The run's policy needs a key, and its run.json pins no pseudonymization "
+                        + "secret version.");
+            }
+            policy.applyKeys(RunKeys.forPin(config, settings.key()));
+            LOGGER.info("Keyed from version {} of the pseudonymization secret.", settings.key().versionId());
         }
         // Read by phileas-pheye-onnx when it loads a model.
         System.setProperty("pheye.onnx.threads", Integer.toString(config.worker().onnxThreads()));

@@ -9,14 +9,21 @@ package ai.philterd.batch.config;
  * {@code <output.prefix>runs/<run_id>/config/}. See {@code docs/kubernetes.md}.
  * @param store The object store, as in a run's configuration.
  * @param output The output bucket and prefix. A run's {@code output.mode} stays in the run's configuration.
+ * @param pseudonymization The secret that keys {@code FPE_ENCRYPT_REPLACE} and {@code CRYPTO_REPLACE}, if any.
  */
-public record Deployment(RunConfig.Store store, RunConfig.Location output) {
+public record Deployment(RunConfig.Store store, RunConfig.Location output,
+                         RunConfig.Pseudonymization pseudonymization) {
 
     /** The environment variable naming the deployment file, so console commands need no option for it. */
     public static final String ENVIRONMENT = "PHILTER_BATCH_DEPLOYMENT";
 
     public Deployment {
         store = store == null ? new RunConfig.Store(null, null, null, null) : store;
+        pseudonymization = pseudonymization == null ? new RunConfig.Pseudonymization(null, null) : pseudonymization;
+    }
+
+    public Deployment(final RunConfig.Store store, final RunConfig.Location output) {
+        this(store, output, null);
     }
 
     /** The output location as a run's output, with the default mode. */

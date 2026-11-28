@@ -418,4 +418,44 @@ class ConsoleTest {
                 "with -c, the gate only");
     }
 
+    @Test
+    void setPolicyNamesKeyedAndRiskyStrategies() throws Exception {
+        configured();
+        final String keyed = PseudonymizationTest.KEYED_POLICY;
+        // Without a secret in the deployment, a keyed policy is refused.
+        assertEquals(ExitCodes.ERROR, execIn(keyed, "set-policy", RUN, "--stdin"));
+
+        final Path deployment = dir.resolve("deployment.yaml");
+        Files.writeString(deployment, Files.readString(deployment) + "pseudonymization: {secret_arn: "
+                + ai.philterd.batch.keys.FakeSecrets.ARN + "}\n");
+        final ai.philterd.batch.keys.FakeSecrets secrets = new ai.philterd.batch.keys.FakeSecrets()
+                .put("v1", "an invented console secret value, over 32 bytes").install();
+        try {
+            assertEquals(ExitCodes.OK, execIn(keyed, "set-policy", RUN, "--stdin"));
+            assertTrue(output().contains("Warning: identifiers.creditCard.creditCardFilterStrategies[0] uses LAST_4. "
+                    + "Keeps the last four characters of each value."), output());
+            assertTrue(output().contains("uses CRYPTO_REPLACE"), output());
+            assertTrue(output().contains("uses HASH_SHA256_REPLACE"), output());
+            assertTrue(output().contains("Keyed from the pseudonymization secret " + ai.philterd.batch.keys.FakeSecrets.ARN
+                    + ": CRYPTO_REPLACE, FPE_ENCRYPT_REPLACE."), output());
+            assertEquals(0, secrets.reads.get(), "set-policy needs no key");
+            // A policy with a key is refused, and the stored policy is the one before.
+            final byte[] stored = store.get("output-bucket", "out/runs/console-run/config/policy.json").orElseThrow().data();
+            assertEquals(ExitCodes.ERROR, execIn(keyed.replace("{\"name\"",
+                    "{\"fpe\":{\"key\":\"2DE79D232DF5585D68CE47882AE256D6\",\"tweak\":\"CBD09280979564\"},\"name\""),
+                    "set-policy", RUN, "--stdin"));
+            assertTrue(java.util.Arrays.equals(stored,
+                    store.get("output-bucket", "out/runs/console-run/config/policy.json").orElseThrow().data()));
+
+            assertEquals(ExitCodes.OK, exec("submit", RUN));
+            assertEquals(ExitCodes.OK, exec("inventory", "--run-id", RUN));
+            assertEquals(ExitCodes.OK, exec("fpe-key", RUN));
+            assertTrue(output().matches("\\{\"fpe\":\\{\"key\":\"[0-9a-f]{64}\",\"tweak\":\"[0-9a-f]{14}\"}}\\s*"),
+                    output());
+            assertEquals(ExitCodes.ERROR, exec("fpe-key"), "no run named");
+        } finally {
+            ai.philterd.batch.keys.FakeSecrets.uninstall();
+        }
+    }
+
 }

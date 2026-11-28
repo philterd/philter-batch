@@ -29,6 +29,10 @@ Workflows, the Helm chart in `deploy/helm/philter-batch`, and its console pod ([
 Output never carries input keys or file names: records use an opaque ID, and the mapping back to keys is only in
 the run's manifest. Logs carry IDs, counts, and reason codes, never text or detected values.
 
+Any Phileas strategy can be used. `FPE_ENCRYPT_REPLACE` and `CRYPTO_REPLACE` are keyed from an AWS Secrets
+Manager secret, never from the policy, so an identifier such as an SSN gets the same format-preserving
+replacement in every document; see [strategies and keys](docs/configuration.md#strategies-and-keys).
+
 Redaction is probabilistic and does not catch every value; validate output against your own data before use.
 Phileas's leftover check is not run for now; see [configuration](docs/configuration.md).
 
@@ -95,7 +99,8 @@ ONNX Runtime and the tokenizer extract and load their native libraries at startu
 with `medium: Memory` there.
 
 On Kubernetes, install Argo Workflows and the Helm chart, then work through the console pod, one `kubectl exec`
-line per step: `configure`, `set-policy`, `submit`, `status`, `sample-report`, `approve` or `reject`. See
+line per step: `configure`, `set-policy`, `submit`, `status`, `sample-report`, `approve` or `reject` (and
+`fpe-key`, to reverse FPE values elsewhere). See
 [Kubernetes](docs/kubernetes.md). `scripts/push-images.sh` copies the images pinned in
 `deploy/helm/philter-batch/images.yaml`, by digest, into the account's private ECR; with the Terraform's
 `internet_access`, the nodes pull them from their public registries instead.

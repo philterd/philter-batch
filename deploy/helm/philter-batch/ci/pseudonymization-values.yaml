@@ -1,0 +1,8 @@
+# Added to test-values.yaml in CI: a deployment with a pseudonymization secret. Invented ARN; nothing is deployed.
+pseudonymization:
+  secretArn: arn:aws:secretsmanager:us-east-1:111122223333:secret:example-pseudonymization-AbCdEf
+networkPolicy:
+  secretsManager:
+    to:
+      - ipBlock:
+          cidr: 10.0.0.0/16

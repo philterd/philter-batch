@@ -105,7 +105,7 @@ public final class Worker {
                 .orElseThrow(() -> new ConfigException("Run " + config.runId() + " has no inventory yet: run the "
                         + "inventory first.")).data(), RunSettings.class);
         FormatException.check("run.json", recorded.format(), Formats.FORMAT);
-        final RunSettings mine = Inventory.settings(config, recorded.policySha256());
+        final RunSettings mine = Inventory.settings(config, recorded.policySha256(), recorded.key());
         if (!mine.equals(recorded)) {
             throw new ConfigException("This worker's configuration differs from the one run " + config.runId()
                     + " was inventoried with (output mode, charset, or extensions).");

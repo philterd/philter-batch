@@ -109,6 +109,9 @@ public final class ConfigLoader {
         if (!out.has("prefix")) {
             out.put("prefix", deployment.output().prefix());
         }
+        if (!node.has("pseudonymization")) {
+            node.set("pseudonymization", YAML.valueToTree(deployment.pseudonymization()));
+        }
         final RunConfig config;
         try {
             config = YAML.treeToValue(node, RunConfig.class);
@@ -123,6 +126,10 @@ public final class ConfigLoader {
                 || !config.output().prefix().equals(deployment.output().prefix())) {
             throw new ConfigException("output.bucket and output.prefix differ from the deployment's ("
                     + deployment.output().bucket() + ", " + deployment.output().prefix() + "); leave them out.");
+        }
+        if (!config.pseudonymization().equals(deployment.pseudonymization())) {
+            throw new ConfigException("pseudonymization differs from the deployment's; leave it out of the "
+                    + "configuration (the Helm chart's pseudonymization values set it).");
         }
         return config;
     }
@@ -142,6 +149,7 @@ public final class ConfigLoader {
         if (!deployment.store().type().equals("s3")) {
             throw new ConfigException("The deployment's store.type must be s3 (the only store in this version).");
         }
+        validatePseudonymization("The deployment's pseudonymization", deployment.pseudonymization());
         return deployment;
     }
 
@@ -224,6 +232,21 @@ public final class ConfigLoader {
         }
         if (!sample.currency().matches("[A-Za-z]{1,10}")) {
             throw new ConfigException("sample.currency must be 1 to 10 letters, such as USD.");
+        }
+        validatePseudonymization("pseudonymization", c.pseudonymization());
+    }
+
+    /** A Secrets Manager secret's ARN, as AWS gives it: the name ends in a hyphen and six random characters. */
+    public static final Pattern SECRET_ARN = Pattern.compile(
+            "arn:aws[a-z-]*:secretsmanager:[a-z]{2}(-[a-z]+)+-[0-9]:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}");
+
+    private static void validatePseudonymization(final String what, final RunConfig.Pseudonymization p) {
+        if (p.secretArn() != null && !SECRET_ARN.matcher(p.secretArn()).matches()) {
+            throw new ConfigException(what + ".secret_arn must be a Secrets Manager secret's full ARN, such as "
+                    + "arn:aws:secretsmanager:us-east-1:111122223333:secret:philter-batch-AbCdEf.");
+        }
+        if (p.endpoint() != null && !p.configured()) {
+            throw new ConfigException(what + ".endpoint is set without secret_arn.");
         }
     }
 
